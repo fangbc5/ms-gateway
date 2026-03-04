@@ -28,6 +28,10 @@ Thumbs.db
 *.log
 logs/
 
+# Docker
+.env
+!.env.example
+
 # Runtime
 *.pid
 *.seed

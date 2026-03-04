@@ -1,0 +1,32 @@
+services:
+  ms-gateway:
+    image: ms-gateway:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ms-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=info
+      - GATEWAY_BIND=0.0.0.0:8080
+      - JWT_DECODING_KEY=${JWT_DECODING_KEY:-your-secret-key-change-in-production}
+      - GLOBAL_QPS=${GLOBAL_QPS:-10000}
+      - CLIENT_QPS=${CLIENT_QPS:-1000}
+      - REQUEST_TIMEOUT_SECS=${REQUEST_TIMEOUT_SECS:-10}
+    volumes:
+      # 挂载配置文件（可选，用于热更新配置）
+      - ./routes.toml:/app/routes.toml:ro
+    restart: unless-stopped
+    networks:
+      - gateway-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  gateway-network:
+    driver: bridge
