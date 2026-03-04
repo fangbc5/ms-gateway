@@ -2,7 +2,6 @@ pub mod round_robin;
 pub mod weighted_random;
 pub mod ip_hash;
 
-use std::sync::Arc;
 use std::net::SocketAddr;
 
 pub trait LoadBalancer: Send + Sync {

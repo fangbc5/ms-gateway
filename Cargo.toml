@@ -1,5 +1,5 @@
 [package]
-name = "helios"
+name = "ms-gateway"
 version = "0.1.0"
 edition = "2024"
 
@@ -49,3 +49,11 @@ dashmap = "6.1.0"
 # 负载均衡器依赖
 arc-swap = "1.7.1"
 rand = "0.8"
+
+# WebSocket 支持
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
+hyper = "1.5"
+hyper-util = { version = "0.1", features = ["tokio"] }
+sha1 = "0.10"
+base64 = "0.22"

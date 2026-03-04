@@ -74,6 +74,7 @@ impl WeightedRandomBalancer {
     }
 
     /// 更新上游节点列表，线程安全
+    #[allow(dead_code)]
     pub fn update(&self, new_upstreams: Vec<WeightedUpstream>) {
         let new_inner = WeightedRandomBalancerInner::new(new_upstreams);
         self.inner.store(Arc::new(new_inner));

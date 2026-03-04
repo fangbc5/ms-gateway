@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>WebSocket Test</title>
+</head>
+<body>
+    <h1>WebSocket Gateway Test</h1>
+    <div>
+        <button onclick="connect()">Connect</button>
+        <button onclick="disconnect()">Disconnect</button>
+        <button onclick="sendMessage()">Send Message</button>
+    </div>
+    <div>
+        <input type="text" id="messageInput" placeholder="Enter message" value="Hello WebSocket!">
+    </div>
+    <div>
+        <h3>Status: <span id="status">Disconnected</span></h3>
+        <h3>Messages:</h3>
+        <pre id="messages"></pre>
+    </div>
+
+    <script>
+        let ws = null;
+
+        function connect() {
+            // 连接到网关的 WebSocket 代理
+            // 假设网关运行在 localhost:8080，代理路径为 /ws
+            // 添加必需的 uid 参数
+            ws = new WebSocket('ws://localhost:8080/ws?uid=123&clientId=test-client');
+
+            ws.onopen = function() {
+                document.getElementById('status').textContent = 'Connected';
+                addMessage('Connected to gateway');
+            };
+
+            ws.onmessage = function(event) {
+                addMessage('Received: ' + event.data);
+            };
+
+            ws.onerror = function(error) {
+                addMessage('Error: ' + error);
+            };
+
+            ws.onclose = function() {
+                document.getElementById('status').textContent = 'Disconnected';
+                addMessage('Connection closed');
+            };
+        }
+
+        function disconnect() {
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+        }
+
+        function sendMessage() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                const msg = document.getElementById('messageInput').value;
+                ws.send(msg);
+                addMessage('Sent: ' + msg);
+            } else {
+                addMessage('Not connected!');
+            }
+        }
+
+        function addMessage(msg) {
+            const messagesDiv = document.getElementById('messages');
+            messagesDiv.textContent += new Date().toLocaleTimeString() + ' - ' + msg + '\n';
+        }
+    </script>
+</body>
+</html>

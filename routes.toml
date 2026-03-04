@@ -3,3 +3,8 @@
 prefix = ["/auth/**", "/token/**", "/user/**"]
 upstream = "http://localhost:30000"
 whitelist = ["/auth/login","/auth/code/send","/auth/code/verify","/auth/register"]
+[[routes]]
+prefix = ["/ws", "/ws/**", "/wss", "/wss/**"]
+upstream = ["http://localhost:30001"]
+# 开放 WebSocket 路径的鉴权（示例：全部放行）
+whitelist = ["/ws", "/ws/**", "/wss", "/wss/**"]

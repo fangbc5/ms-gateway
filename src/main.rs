@@ -10,6 +10,7 @@ mod metrics;
 mod rate_limit;
 mod path_matcher;
 mod load_balancer;
+mod websocket;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

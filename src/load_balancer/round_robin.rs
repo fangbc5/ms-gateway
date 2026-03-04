@@ -19,11 +19,13 @@ impl RoundRobinBalancer {
     }
 
     /// 无锁更新节点列表
+    #[allow(dead_code)]
     pub fn update_upstreams(&self, new_upstreams: Vec<String>) {
         self.upstreams.store(Arc::new(new_upstreams));
     }
 
     /// 获取当前节点列表
+    #[allow(dead_code)]
     pub fn get_upstreams(&self) -> Arc<Vec<String>> {
         self.upstreams.load_full()
     }

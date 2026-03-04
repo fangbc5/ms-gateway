@@ -55,6 +55,15 @@ pub fn router() -> Router {
 
 // ===== 代理处理器 =====
 async fn proxy_handler(req: Request<Body>) -> Response<Body> {
+    // 检测 WebSocket 升级请求
+    let upgrade_header = req.headers().get(axum::http::header::UPGRADE);
+    let is_websocket = upgrade_header
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.eq_ignore_ascii_case("websocket"))
+        .unwrap_or(false);
+
+    tracing::debug!("请求头 Upgrade: {:?}, is_websocket: {}", upgrade_header, is_websocket);
+
     let settings = req.extensions().get::<Settings>().cloned();
     let route_rules = req.extensions().get::<Vec<crate::config::RouteRule>>().cloned();
 
@@ -91,6 +100,23 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
     };
 
     info!("路径匹配: {} -> {} (转发到: {})", match_path, forward_path, upstream);
+
+    // 如果是 WebSocket 请求，走 WebSocket 代理逻辑
+    if is_websocket {
+        // WebSocket 需要保留完整路径，如果 forward_path 为空则使用原始路径
+        let ws_path = if forward_path.is_empty() {
+            match_path.to_string()
+        } else {
+            forward_path
+        };
+        let ws_url = format!("{}{}{}",
+            upstream.replace("http://", "ws://").replace("https://", "wss://"),
+            ws_path,
+            query_suffix
+        );
+        info!("检测到 WebSocket 请求，转发到: {}", ws_url);
+        return crate::websocket::handle_websocket(req, ws_url).await;
+    }
 
     // 构建 reqwest 请求
     let mut rb = HTTP_CLIENT
@@ -226,27 +252,37 @@ async fn check_whitelist_middleware(mut req: Request<Body>, next: Next) -> Respo
     let path = req.uri().path();
     let match_path = path.strip_prefix("/proxy").unwrap_or(path);
 
+    tracing::debug!("白名单检查: 原始路径={}, 匹配路径={}", path, match_path);
+
     if let Some(rules) = req.extensions().get::<Vec<crate::config::RouteRule>>() {
         // 找到第一个匹配的路由，检查其 whitelist 是否命中
         if let Some(rule) = find_best_match(rules, match_path) {
+            tracing::debug!("找到匹配规则: prefix={:?}, whitelist={:?}", rule.prefix, rule.whitelist);
             if let Some(whitelist) = &rule.whitelist {
                 // 任意一个白名单模式命中即可
                 let hit = whitelist.iter().any(|w| {
                     // 复用 RouteRule 的匹配逻辑
                     // 这里把单个白名单项当作一个前缀来匹配
-                    if w.contains('{') || w.contains('*') || w.contains('?') {
+                    let matched = if w.contains('{') || w.contains('*') || w.contains('?') {
                         crate::path_matcher::RoutePattern::from_pattern(w)
                             .map(|rp| rp.matches(match_path))
                             .unwrap_or(false)
                     } else {
                         match_path == w || match_path.starts_with(&format!("{}/", w))
-                    }
+                    };
+                    tracing::debug!("白名单项 '{}' 匹配 '{}': {}", w, match_path, matched);
+                    matched
                 });
                 if hit {
+                    tracing::info!("✓ 白名单命中，跳过鉴权: {}", match_path);
                     // 标记跳过鉴权
                     req.extensions_mut().insert(WhitelistBypass);
+                } else {
+                    tracing::warn!("✗ 白名单未命中: {}", match_path);
                 }
             }
+        } else {
+            tracing::warn!("未找到匹配的路由规则: {}", match_path);
         }
     }
 
