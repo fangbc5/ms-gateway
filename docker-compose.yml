@@ -19,7 +19,7 @@ services:
       - ./routes.toml:/app/routes.toml:ro
     restart: unless-stopped
     networks:
-      - gateway-network
+      - fbc-network
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/"]
       interval: 30s
@@ -28,5 +28,5 @@ services:
       start_period: 40s
 
 networks:
-  gateway-network:
+  fbc-network:
     driver: bridge

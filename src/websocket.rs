@@ -10,10 +10,8 @@ use tokio_tungstenite::connect_async;
 use tracing::{error, info, warn};
 
 /// WebSocket 代理处理器
-pub async fn handle_websocket(req: Request<Body>, upstream_url: String) -> Response<Body> {
-    info!("开始处理 WebSocket 请求，目标: {}", upstream_url);
-
-    // 检查是否是 WebSocket 升级请求
+pub async fn handle_websocket(mut req: Request<Body>, upstream_url: String) -> Response<Body> {
+    // 再次防御性检查是否为 WebSocket 升级请求
     let is_upgrade = req
         .headers()
         .get(axum::http::header::UPGRADE)
@@ -22,40 +20,35 @@ pub async fn handle_websocket(req: Request<Body>, upstream_url: String) -> Respo
         .unwrap_or(false);
 
     if !is_upgrade {
-        error!("不是 WebSocket 升级请求");
         return (StatusCode::BAD_REQUEST, "Not a WebSocket upgrade request")
             .into_response()
             .map(Body::new);
     }
 
-    // 提取 Sec-WebSocket-Key 用于生成响应
-    let ws_key = req
+    // 提前计算 Sec-WebSocket-Accept，后面构造 101 响应用
+    let accept_key = req
         .headers()
         .get("Sec-WebSocket-Key")
         .and_then(|v| v.to_str().ok())
-        .map(|key| derive_accept_key(key))
+        .map(derive_accept_key)
         .unwrap_or_default();
 
-    info!("准备升级连接，Sec-WebSocket-Accept: {}", ws_key);
+    // 获取升级句柄，但不要在返回响应前 await
+    let on_upgrade = hyper::upgrade::on(&mut req);
 
-    // 创建升级 future（不等待）
-    let upgrade_future = hyper::upgrade::on(req);
-
-    // 在后台任务中处理升级和代理
+    // 后台任务中等待升级完成并建立到上游的 WebSocket 连接
     tokio::spawn(async move {
-        match upgrade_future.await {
+        match on_upgrade.await {
             Ok(upgraded) => {
-                info!("连接升级成功");
-                // 使用 TokioIo 包装 upgraded 连接
                 let io = TokioIo::new(upgraded);
-                let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+                let websocket = tokio_tungstenite::WebSocketStream::from_raw_socket(
                     io,
                     tokio_tungstenite::tungstenite::protocol::Role::Server,
                     None,
                 )
                 .await;
 
-                if let Err(e) = proxy_websocket(ws, upstream_url).await {
+                if let Err(e) = proxy_websocket(websocket, upstream_url).await {
                     error!("WebSocket proxy error: {}", e);
                 }
             }
@@ -65,12 +58,12 @@ pub async fn handle_websocket(req: Request<Body>, upstream_url: String) -> Respo
         }
     });
 
-    // 立即返回 101 Switching Protocols 响应
+    // 立即返回 101 Switching Protocols 响应，完成 HTTP -> WebSocket 握手
     Response::builder()
         .status(StatusCode::SWITCHING_PROTOCOLS)
         .header(axum::http::header::UPGRADE, "websocket")
         .header(axum::http::header::CONNECTION, "Upgrade")
-        .header("Sec-WebSocket-Accept", ws_key)
+        .header("Sec-WebSocket-Accept", accept_key)
         .body(Body::empty())
         .unwrap()
 }

@@ -57,7 +57,7 @@ docker-compose down
 environment:
   - RUST_LOG=info              # 日志级别
   - GATEWAY_BIND=0.0.0.0:8080  # 监听地址
-  - JWT_SECRET=your-secret     # JWT 密钥
+  - JWT_DECODING_KEY=your-secret     # JWT 密钥
 ```
 
 ### 配置文件
@@ -74,7 +74,7 @@ docker-compose restart
 
 创建 `.env` 文件：
 ```bash
-JWT_SECRET=your-production-secret-key
+JWT_DECODING_KEY=your-production-secret-key
 RUST_LOG=warn
 ```
 
