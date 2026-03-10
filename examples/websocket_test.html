@@ -1,73 +1,387 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>WebSocket Test</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket 双用户通讯测试</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f2f5; padding: 20px; }
+        h1 { text-align: center; margin-bottom: 20px; color: #1a1a2e; }
+        .container { display: flex; gap: 20px; max-width: 1400px; margin: 0 auto; }
+        .user-panel {
+            flex: 1; background: #fff; border-radius: 12px; padding: 20px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08); display: flex; flex-direction: column;
+        }
+        .user-panel.user-a { border-top: 4px solid #4f46e5; }
+        .user-panel.user-b { border-top: 4px solid #059669; }
+        .panel-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .panel-title { font-size: 18px; font-weight: 700; }
+        .user-a .panel-title { color: #4f46e5; }
+        .user-b .panel-title { color: #059669; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; }
+        .status-dot.connected { background: #22c55e; }
+        .status-dot.disconnected { background: #ef4444; }
+        .config-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
+        .config-row label { min-width: 70px; font-size: 13px; color: #666; }
+        .config-row input { flex: 1; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+        .btn-row { display: flex; gap: 8px; margin-bottom: 16px; }
+        .btn {
+            padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
+            font-size: 13px; font-weight: 600; transition: all 0.2s;
+        }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-connect { background: #4f46e5; color: #fff; }
+        .btn-connect:hover:not(:disabled) { background: #4338ca; }
+        .btn-disconnect { background: #ef4444; color: #fff; }
+        .btn-disconnect:hover:not(:disabled) { background: #dc2626; }
+        .btn-send { background: #059669; color: #fff; }
+        .btn-send:hover:not(:disabled) { background: #047857; }
+        .btn-heartbeat { background: #f59e0b; color: #fff; }
+        .btn-heartbeat:hover:not(:disabled) { background: #d97706; }
+        .btn-clear { background: #6b7280; color: #fff; }
+        .btn-clear:hover:not(:disabled) { background: #4b5563; }
+        .msg-type-row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+        .msg-type-row select { flex: 1; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
+        .send-area { display: flex; gap: 8px; margin-bottom: 16px; }
+        .send-area textarea {
+            flex: 1; padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 6px;
+            font-size: 13px; resize: vertical; min-height: 60px; font-family: 'Menlo', monospace;
+        }
+        .log-area {
+            flex: 1; min-height: 300px; max-height: 500px; overflow-y: auto;
+            background: #1e1e2e; color: #cdd6f4; border-radius: 8px; padding: 12px;
+            font-family: 'Menlo', 'Courier New', monospace; font-size: 12px; line-height: 1.6;
+        }
+        .log-entry { margin-bottom: 4px; word-break: break-all; }
+        .log-entry.sent { color: #89b4fa; }
+        .log-entry.received { color: #a6e3a1; }
+        .log-entry.system { color: #f9e2af; }
+        .log-entry.error { color: #f38ba8; }
+        .log-time { color: #6c7086; margin-right: 8px; }
+
+        /* 中间连接指示 */
+        .connection-indicator {
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            min-width: 60px; color: #9ca3af; font-size: 12px;
+        }
+        .connection-indicator .arrow { font-size: 24px; margin: 4px 0; }
+
+        /* 快捷消息模板 */
+        .templates { margin-bottom: 10px; }
+        .templates summary { cursor: pointer; font-size: 13px; color: #666; margin-bottom: 6px; }
+        .template-btn {
+            display: inline-block; padding: 4px 8px; margin: 2px; background: #e5e7eb;
+            border-radius: 4px; font-size: 11px; cursor: pointer; border: none;
+        }
+        .template-btn:hover { background: #d1d5db; }
+
+        @media (max-width: 900px) {
+            .container { flex-direction: column; }
+            .connection-indicator { flex-direction: row; min-width: unset; }
+        }
+    </style>
 </head>
 <body>
-    <h1>WebSocket Gateway Test</h1>
-    <div>
-        <button onclick="connect()">Connect</button>
-        <button onclick="disconnect()">Disconnect</button>
-        <button onclick="sendMessage()">Send Message</button>
-    </div>
-    <div>
-        <input type="text" id="messageInput" placeholder="Enter message" value="Hello WebSocket!">
-    </div>
-    <div>
-        <h3>Status: <span id="status">Disconnected</span></h3>
-        <h3>Messages:</h3>
-        <pre id="messages"></pre>
+    <h1>🔌 WebSocket 双用户通讯测试</h1>
+
+    <div class="container">
+        <!-- 用户 A -->
+        <div class="user-panel user-a">
+            <div class="panel-header">
+                <span class="panel-title">👤 用户 A</span>
+                <span><span class="status-dot disconnected" id="statusDot-a"></span><span id="statusText-a">未连接</span></span>
+            </div>
+            <div class="config-row">
+                <label>Gateway</label>
+                <input id="gateway-a" value="ws://localhost:8080/ws" />
+            </div>
+            <div class="config-row">
+                <label>UID</label>
+                <input id="uid-a" value="1001" type="number" />
+            </div>
+            <div class="config-row">
+                <label>ClientID</label>
+                <input id="clientId-a" value="device-a-001" />
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-connect" id="connectBtn-a" onclick="connect('a')">连接</button>
+                <button class="btn btn-disconnect" id="disconnectBtn-a" onclick="disconnect('a')" disabled>断开</button>
+                <button class="btn btn-heartbeat" id="heartbeatBtn-a" onclick="sendHeartbeat('a')" disabled>心跳</button>
+                <button class="btn btn-clear" onclick="clearLog('a')">清空</button>
+            </div>
+
+            <div class="msg-type-row">
+                <select id="msgType-a" onchange="updateDataTemplate('a')">
+                    <option value="2">心跳 (type=2)</option>
+                    <option value="15">消息确认 ACK (type=15)</option>
+                    <option value="16">消息已读 Read (type=16)</option>
+                    <option value="5">视频通话请求 (type=5)</option>
+                    <option value="6">视频通话响应 (type=6)</option>
+                    <option value="14">WebRTC 信令 (type=14)</option>
+                    <option value="0">自定义 (手动输入)</option>
+                </select>
+            </div>
+
+            <details class="templates">
+                <summary>📋 快捷消息模板</summary>
+                <button class="template-btn" onclick="applyTemplate('a', 'heartbeat')">心跳</button>
+                <button class="template-btn" onclick="applyTemplate('a', 'ack')">ACK</button>
+                <button class="template-btn" onclick="applyTemplate('a', 'read')">已读</button>
+                <button class="template-btn" onclick="applyTemplate('a', 'videoCall')">发起视频</button>
+                <button class="template-btn" onclick="applyTemplate('a', 'videoAccept')">接听视频</button>
+            </details>
+
+            <div class="send-area">
+                <textarea id="data-a" placeholder="消息 data 字段 (JSON)">{"type": 2, "data": {}}</textarea>
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-send" id="sendBtn-a" onclick="sendMessage('a')" disabled>发送消息</button>
+            </div>
+            <div class="log-area" id="log-a"></div>
+        </div>
+
+        <!-- 中间指示 -->
+        <div class="connection-indicator">
+            <span>Gateway</span>
+            <span class="arrow">⇄</span>
+            <span>ms-websocket</span>
+        </div>
+
+        <!-- 用户 B -->
+        <div class="user-panel user-b">
+            <div class="panel-header">
+                <span class="panel-title">👤 用户 B</span>
+                <span><span class="status-dot disconnected" id="statusDot-b"></span><span id="statusText-b">未连接</span></span>
+            </div>
+            <div class="config-row">
+                <label>Gateway</label>
+                <input id="gateway-b" value="ws://localhost:8080/ws" />
+            </div>
+            <div class="config-row">
+                <label>UID</label>
+                <input id="uid-b" value="1002" type="number" />
+            </div>
+            <div class="config-row">
+                <label>ClientID</label>
+                <input id="clientId-b" value="device-b-001" />
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-connect" id="connectBtn-b" onclick="connect('b')">连接</button>
+                <button class="btn btn-disconnect" id="disconnectBtn-b" onclick="disconnect('b')" disabled>断开</button>
+                <button class="btn btn-heartbeat" id="heartbeatBtn-b" onclick="sendHeartbeat('b')" disabled>心跳</button>
+                <button class="btn btn-clear" onclick="clearLog('b')">清空</button>
+            </div>
+
+            <div class="msg-type-row">
+                <select id="msgType-b" onchange="updateDataTemplate('b')">
+                    <option value="2">心跳 (type=2)</option>
+                    <option value="15">消息确认 ACK (type=15)</option>
+                    <option value="16">消息已读 Read (type=16)</option>
+                    <option value="5">视频通话请求 (type=5)</option>
+                    <option value="6">视频通话响应 (type=6)</option>
+                    <option value="14">WebRTC 信令 (type=14)</option>
+                    <option value="0">自定义 (手动输入)</option>
+                </select>
+            </div>
+
+            <details class="templates">
+                <summary>📋 快捷消息模板</summary>
+                <button class="template-btn" onclick="applyTemplate('b', 'heartbeat')">心跳</button>
+                <button class="template-btn" onclick="applyTemplate('b', 'ack')">ACK</button>
+                <button class="template-btn" onclick="applyTemplate('b', 'read')">已读</button>
+                <button class="template-btn" onclick="applyTemplate('b', 'videoCall')">发起视频</button>
+                <button class="template-btn" onclick="applyTemplate('b', 'videoAccept')">接听视频</button>
+            </details>
+
+            <div class="send-area">
+                <textarea id="data-b" placeholder="消息 data 字段 (JSON)">{"type": 2, "data": {}}</textarea>
+            </div>
+            <div class="btn-row">
+                <button class="btn btn-send" id="sendBtn-b" onclick="sendMessage('b')" disabled>发送消息</button>
+            </div>
+            <div class="log-area" id="log-b"></div>
+        </div>
     </div>
 
     <script>
-        let ws = null;
+        // ============ 连接管理 ============
+        const sockets = { a: null, b: null };
+        const heartbeatTimers = { a: null, b: null };
 
-        function connect() {
-            // 连接到网关的 WebSocket 代理
-            // 假设网关运行在 localhost:8080，代理路径为 /ws
-            // 添加必需的 uid 参数
-            ws = new WebSocket('ws://localhost:8080/ws?uid=123&clientId=test-client');
+        function connect(user) {
+            const gateway = document.getElementById(`gateway-${user}`).value;
+            const uid = document.getElementById(`uid-${user}`).value;
+            const clientId = document.getElementById(`clientId-${user}`).value;
 
-            ws.onopen = function() {
-                document.getElementById('status').textContent = 'Connected';
-                addMessage('Connected to gateway');
-            };
+            if (!uid || uid === '0') {
+                addLog(user, 'error', 'UID 不能为空或 0');
+                return;
+            }
 
-            ws.onmessage = function(event) {
-                addMessage('Received: ' + event.data);
-            };
+            const url = `${gateway}?uid=${uid}&clientId=${encodeURIComponent(clientId)}`;
+            addLog(user, 'system', `正在连接: ${url}`);
 
-            ws.onerror = function(error) {
-                addMessage('Error: ' + error);
-            };
+            try {
+                const ws = new WebSocket(url);
+                sockets[user] = ws;
 
-            ws.onclose = function() {
-                document.getElementById('status').textContent = 'Disconnected';
-                addMessage('Connection closed');
-            };
-        }
+                ws.onopen = () => {
+                    setStatus(user, true);
+                    addLog(user, 'system', `✅ 已连接 (uid=${uid}, clientId=${clientId})`);
+                    // 启动自动心跳 (每 15 秒)
+                    startHeartbeat(user);
+                };
 
-        function disconnect() {
-            if (ws) {
-                ws.close();
-                ws = null;
+                ws.onmessage = (event) => {
+                    let display = event.data;
+                    try {
+                        const parsed = JSON.parse(event.data);
+                        display = JSON.stringify(parsed, null, 2);
+                    } catch (e) { /* 非 JSON 原样显示 */ }
+                    addLog(user, 'received', `📩 收到: ${display}`);
+                };
+
+                ws.onerror = (error) => {
+                    addLog(user, 'error', `❌ 连接错误`);
+                };
+
+                ws.onclose = (event) => {
+                    setStatus(user, false);
+                    stopHeartbeat(user);
+                    addLog(user, 'system', `🔌 连接关闭 (code=${event.code}, reason=${event.reason || '无'})`);
+                    sockets[user] = null;
+                };
+            } catch (e) {
+                addLog(user, 'error', `连接失败: ${e.message}`);
             }
         }
 
-        function sendMessage() {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                const msg = document.getElementById('messageInput').value;
+        function disconnect(user) {
+            if (sockets[user]) {
+                sockets[user].close(1000, '用户主动断开');
+                sockets[user] = null;
+            }
+            stopHeartbeat(user);
+        }
+
+        // ============ 心跳 ============
+        function startHeartbeat(user) {
+            stopHeartbeat(user);
+            heartbeatTimers[user] = setInterval(() => {
+                if (sockets[user] && sockets[user].readyState === WebSocket.OPEN) {
+                    const msg = JSON.stringify({ type: 2, data: {} });
+                    sockets[user].send(msg);
+                    addLog(user, 'sent', `💓 自动心跳: ${msg}`);
+                }
+            }, 15000);
+        }
+
+        function stopHeartbeat(user) {
+            if (heartbeatTimers[user]) {
+                clearInterval(heartbeatTimers[user]);
+                heartbeatTimers[user] = null;
+            }
+        }
+
+        function sendHeartbeat(user) {
+            if (sockets[user] && sockets[user].readyState === WebSocket.OPEN) {
+                const msg = JSON.stringify({ type: 2, data: {} });
+                sockets[user].send(msg);
+                addLog(user, 'sent', `💓 手动心跳: ${msg}`);
+            }
+        }
+
+        // ============ 发送消息 ============
+        function sendMessage(user) {
+            const ws = sockets[user];
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addLog(user, 'error', '未连接，无法发送');
+                return;
+            }
+
+            const raw = document.getElementById(`data-${user}`).value.trim();
+            try {
+                // 验证是合法 JSON
+                const parsed = JSON.parse(raw);
+                const msg = JSON.stringify(parsed);
                 ws.send(msg);
-                addMessage('Sent: ' + msg);
-            } else {
-                addMessage('Not connected!');
+                addLog(user, 'sent', `📤 发送: ${JSON.stringify(parsed, null, 2)}`);
+            } catch (e) {
+                addLog(user, 'error', `JSON 格式错误: ${e.message}`);
             }
         }
 
-        function addMessage(msg) {
-            const messagesDiv = document.getElementById('messages');
-            messagesDiv.textContent += new Date().toLocaleTimeString() + ' - ' + msg + '\n';
+        // ============ 消息模板 ============
+        const templates = {
+            heartbeat: { type: 2, data: {} },
+            ack: { type: 15, data: { msg_id: 100001 } },
+            read: { type: 16, data: { room_id: 1, msg_ids: [100001, 100002, 100003] } },
+            videoCall: { type: 5, data: { target_uid: 0, room_id: 1, media_type: "video" } },
+            videoAccept: { type: 6, data: { target_uid: 0, room_id: 1, accept: true } },
+        };
+
+        function applyTemplate(user, name) {
+            const tpl = JSON.parse(JSON.stringify(templates[name]));
+            // 自动填充 target_uid 为对方的 uid
+            const otherUser = user === 'a' ? 'b' : 'a';
+            const otherUid = parseInt(document.getElementById(`uid-${otherUser}`).value) || 0;
+            if (tpl.data && tpl.data.target_uid !== undefined) {
+                tpl.data.target_uid = otherUid;
+            }
+            document.getElementById(`data-${user}`).value = JSON.stringify(tpl, null, 2);
+            // 同步选择器
+            const select = document.getElementById(`msgType-${user}`);
+            const opt = Array.from(select.options).find(o => parseInt(o.value) === tpl.type);
+            if (opt) select.value = opt.value;
+            else select.value = '0';
+        }
+
+        function updateDataTemplate(user) {
+            const type = parseInt(document.getElementById(`msgType-${user}`).value);
+            const map = { 2: 'heartbeat', 15: 'ack', 16: 'read', 5: 'videoCall', 6: 'videoAccept' };
+            if (map[type]) {
+                applyTemplate(user, map[type]);
+            } else if (type === 14) {
+                const otherUid = parseInt(document.getElementById(`uid-${user === 'a' ? 'b' : 'a'}`).value) || 0;
+                document.getElementById(`data-${user}`).value = JSON.stringify({
+                    type: 14,
+                    data: { target_uid: otherUid, signal_type: "offer", sdp: "..." }
+                }, null, 2);
+            }
+        }
+
+        // ============ UI 辅助 ============
+        function setStatus(user, connected) {
+            const dot = document.getElementById(`statusDot-${user}`);
+            const text = document.getElementById(`statusText-${user}`);
+            dot.className = `status-dot ${connected ? 'connected' : 'disconnected'}`;
+            text.textContent = connected ? '已连接' : '未连接';
+
+            document.getElementById(`connectBtn-${user}`).disabled = connected;
+            document.getElementById(`disconnectBtn-${user}`).disabled = !connected;
+            document.getElementById(`heartbeatBtn-${user}`).disabled = !connected;
+            document.getElementById(`sendBtn-${user}`).disabled = !connected;
+        }
+
+        function addLog(user, type, message) {
+            const logDiv = document.getElementById(`log-${user}`);
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            const time = new Date().toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+            entry.innerHTML = `<span class="log-time">[${time}]</span>${escapeHtml(message)}`;
+            logDiv.appendChild(entry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        function clearLog(user) {
+            document.getElementById(`log-${user}`).innerHTML = '';
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
         }
     </script>
 </body>

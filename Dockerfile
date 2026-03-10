@@ -1,5 +1,5 @@
 # ===== 构建阶段 =====
-FROM rust:1.83-slim as builder
+FROM rust:1.85-slim as builder
 
 # 配置 Cargo 使用国内镜像源（加速构建）
 RUN mkdir -p /usr/local/cargo && \
