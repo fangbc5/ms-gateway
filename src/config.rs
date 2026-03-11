@@ -6,9 +6,29 @@ use crate::health_check::HealthCheckConfig;
 use std::collections::HashMap;
 use arc_swap::ArcSwap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// 共享路由规则：使用 ArcSwap 实现无锁热重载
 pub type SharedRouteRules = Arc<ArcSwap<Vec<RouteRule>>>;
+
+/// 标记 Nacos 是否正在管理路由配置
+/// 当 Nacos 路由激活时，本地 routes.toml 文件变更将被忽略，避免配置冲突
+static NACOS_ROUTES_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 设置 Nacos 路由激活状态
+pub fn set_nacos_routes_active(active: bool) {
+    NACOS_ROUTES_ACTIVE.store(active, Ordering::SeqCst);
+    if active {
+        tracing::info!("🔒 Nacos 路由已激活，本地 routes.toml 变更将被忽略");
+    } else {
+        tracing::info!("🔓 Nacos 路由已停用，恢复本地 routes.toml 管理");
+    }
+}
+
+/// 检查 Nacos 路由是否激活
+pub fn is_nacos_routes_active() -> bool {
+    NACOS_ROUTES_ACTIVE.load(Ordering::SeqCst)
+}
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RouteRule {
@@ -19,7 +39,8 @@ pub struct RouteRule {
     #[serde(default, with = "string_or_vec_deser")]
     pub upstream: Vec<String>,
     // Nacos 服务名（和 upstream 二选一，启用 Nacos 时从注册中心发现实例）
-    #[serde(default)]
+    // 同时支持 service_name 和 server_name 两种写法
+    #[serde(default, alias = "server_name")]
     pub service_name: Option<String>,
     // 负载均衡策略，默认为轮询
     #[serde(default = "default_strategy")]
@@ -111,32 +132,41 @@ pub struct NacosSettings {
     /// Nacos 服务器地址（逗号分隔多地址）
     #[serde(default = "default_nacos_addrs")]
     pub server_addrs: String,
-    /// 命名空间
-    pub namespace: Option<String>,
     /// 认证用户名
     pub username: Option<String>,
     /// 认证密码
     pub password: Option<String>,
-    /// 服务组名
+
+    // ---- 配置中心（Config Center）命名空间 & 组 ----
+    /// 配置中心命名空间（独立于服务注册）
+    #[serde(default = "default_nacos_namespace")]
+    pub config_namespace: String,
+    /// 配置中心默认组
     #[serde(default = "default_nacos_group")]
-    pub group: String,
+    pub config_group: String,
+
+    // ---- 服务注册/发现（Naming）命名空间 & 组 ----
+    /// 服务注册/发现命名空间（独立于配置中心）
+    #[serde(default = "default_nacos_namespace")]
+    pub naming_namespace: String,
+    /// 服务注册/发现默认组
+    #[serde(default = "default_nacos_group")]
+    pub naming_group: String,
+
     /// 是否注册网关自身
     #[serde(default)]
     pub register_enabled: bool,
     /// 注册到 Nacos 的服务名
     pub service_name: Option<String>,
-    /// 网关主配置的 data_id（从 Nacos 读取 Settings）
-    pub config_data_id: Option<String>,
-    pub config_group: Option<String>,
+
     /// 路由规则的 data_id（从 Nacos 读取 routes）
     pub routes_data_id: Option<String>,
+    /// 路由规则的 group（可选，默认使用 config_group）
     pub routes_group: Option<String>,
-    /// 要订阅的服务列表（逗号分隔）
-    #[serde(default)]
-    pub subscribe_services: Vec<String>,
 }
 
 fn default_nacos_addrs() -> String { "127.0.0.1:8848".to_string() }
+fn default_nacos_namespace() -> String { "public".to_string() }
 fn default_nacos_group() -> String { "DEFAULT_GROUP".to_string() }
 
 impl Settings {
@@ -273,7 +303,10 @@ pub fn load_settings() -> Result<Settings, config::ConfigError> {
 
     let builder = Config::builder()
         .add_source(File::with_name("config").required(false))
-        .add_source(config::Environment::default());
+        .add_source(
+            config::Environment::default()
+                .separator("__")  // 支持嵌套结构: NACOS__ENABLED -> nacos.enabled
+        );
 
     let cfg = builder.build()?;
     cfg.try_deserialize::<Settings>()
@@ -326,7 +359,12 @@ pub fn create_shared_route_rules(rules: Vec<RouteRule>) -> SharedRouteRules {
 }
 
 /// 热重载路由规则：重新读取 routes.toml 并原子替换
+/// 当 Nacos 路由激活时，本地文件重载将被跳过
 pub fn reload_route_rules(shared: &SharedRouteRules) -> Result<usize, String> {
+    if is_nacos_routes_active() {
+        tracing::info!("⏭ 跳过本地路由重载：Nacos 路由已激活，优先级更高");
+        return Err("Nacos 路由已激活，本地 routes.toml 变更已忽略".to_string());
+    }
     match load_route_rules() {
         Ok((new_rules, _health_config)) => {
             let count = new_rules.len();

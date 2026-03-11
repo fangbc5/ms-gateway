@@ -90,15 +90,13 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
         if let Some(best_match) = find_best_match(rules, match_path) {
             let path_variables = best_match.extract_variables(match_path);
 
-            // 优先从 Nacos 服务发现获取上游，否则使用配置的 upstream
+            // 从 Nacos 服务发现获取上游，或使用路由规则中的 upstream（两套体系独立互不回退）
             let upstreams = if let Some(ref svc_name) = best_match.service_name {
                 let nacos_upstreams = crate::nacos::instances_to_upstreams(svc_name);
                 if nacos_upstreams.is_empty() {
-                    tracing::warn!("Nacos 服务 {} 无可用实例，回退到本地配置", svc_name);
-                    best_match.upstream.clone()
-                } else {
-                    nacos_upstreams
+                    tracing::warn!("⚠️ 服务 {} 无可用实例，请检查 Nacos 注册状态", svc_name);
                 }
+                nacos_upstreams
             } else {
                 best_match.upstream.clone()
             };

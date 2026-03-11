@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ms-gateway — High-Performance API Gateway</title>
+<meta name="description" content="ms-gateway: A high-performance, lightweight API gateway built with Rust and Axum. Featuring dynamic routing, Nacos integration, health checks, and more.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0f;--surface:#12121a;--surface2:#1a1a28;--border:#2a2a3d;
+  --text:#e8e8f0;--text2:#9898b0;--text3:#6868a0;
+  --accent:#6c5ce7;--accent2:#a29bfe;--accent3:#00cec9;--glow:rgba(108,92,231,.15);
+  --gradient:linear-gradient(135deg,#6c5ce7 0%,#a29bfe 50%,#00cec9 100%);
+}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);overflow-x:hidden;line-height:1.6}
+
+/* Animated bg */
+.bg-grid{position:fixed;inset:0;z-index:0;
+  background-image:radial-gradient(circle at 1px 1px,rgba(108,92,231,.08) 1px,transparent 0);
+  background-size:48px 48px;pointer-events:none}
+.bg-glow{position:fixed;z-index:0;pointer-events:none;border-radius:50%;filter:blur(120px);opacity:.35;animation:drift 20s ease-in-out infinite alternate}
+.bg-glow-1{width:600px;height:600px;background:#6c5ce7;top:-200px;left:-100px}
+.bg-glow-2{width:500px;height:500px;background:#00cec9;bottom:-200px;right:-100px;animation-delay:-10s}
+
+@keyframes drift{0%{transform:translate(0,0)}50%{transform:translate(60px,40px)}100%{transform:translate(-30px,60px)}}
+
+/* Layout */
+.container{max-width:1100px;margin:0 auto;padding:0 24px;position:relative;z-index:1}
+header{padding:20px 0;position:fixed;top:0;left:0;right:0;z-index:100;backdrop-filter:blur(20px);background:rgba(10,10,15,.7);border-bottom:1px solid var(--border);transition:all .3s}
+header .container{display:flex;align-items:center;justify-content:space-between}
+.logo{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.15rem;text-decoration:none;color:var(--text)}
+.logo-icon{width:34px;height:34px;border-radius:10px;background:var(--gradient);display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;color:#fff;box-shadow:0 4px 20px rgba(108,92,231,.3)}
+.nav{display:flex;gap:8px}
+.nav a{padding:8px 16px;border-radius:8px;text-decoration:none;color:var(--text2);font-size:.875rem;font-weight:500;transition:all .2s}
+.nav a:hover{color:var(--text);background:var(--surface2)}
+.btn-gh{display:flex;align-items:center;gap:6px;padding:8px 18px;border-radius:8px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-size:.875rem;font-weight:500;text-decoration:none;transition:all .25s}
+.btn-gh:hover{border-color:var(--accent);box-shadow:0 0 20px var(--glow)}
+.btn-gh svg{width:18px;height:18px}
+
+/* Hero */
+.hero{min-height:100vh;display:flex;align-items:center;padding-top:80px}
+.hero-inner{text-align:center;max-width:760px;margin:0 auto}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:6px 16px;border-radius:999px;background:var(--surface2);border:1px solid var(--border);font-size:.8rem;color:var(--accent2);font-weight:500;margin-bottom:28px}
+.badge::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent3);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(.8)}}
+h1{font-size:clamp(2.5rem,6vw,4.2rem);font-weight:800;line-height:1.1;letter-spacing:-.03em;margin-bottom:20px}
+h1 .gradient{background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.hero p{font-size:1.15rem;color:var(--text2);max-width:540px;margin:0 auto 36px}
+.hero-actions{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+.btn-primary{padding:14px 32px;border-radius:12px;background:var(--gradient);color:#fff;font-weight:600;font-size:.95rem;text-decoration:none;transition:all .3s;box-shadow:0 4px 24px rgba(108,92,231,.3)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 8px 32px rgba(108,92,231,.45)}
+.btn-secondary{padding:14px 32px;border-radius:12px;background:var(--surface2);border:1px solid var(--border);color:var(--text);font-weight:600;font-size:.95rem;text-decoration:none;transition:all .3s}
+.btn-secondary:hover{border-color:var(--accent);box-shadow:0 0 24px var(--glow)}
+
+/* Stats */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--border);border-radius:16px;overflow:hidden;margin-top:64px;border:1px solid var(--border)}
+.stat{padding:28px 16px;background:var(--surface);text-align:center}
+.stat-value{font-size:1.8rem;font-weight:700;background:var(--gradient);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.stat-label{font-size:.8rem;color:var(--text3);margin-top:4px;font-weight:500}
+
+/* Features */
+.features{padding:120px 0}
+.section-title{text-align:center;margin-bottom:60px}
+.section-title h2{font-size:2.2rem;font-weight:700;margin-bottom:12px}
+.section-title p{color:var(--text2);font-size:1.05rem}
+.feature-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px}
+.feature-card{padding:32px 28px;border-radius:16px;background:var(--surface);border:1px solid var(--border);transition:all .3s}
+.feature-card:hover{border-color:var(--accent);transform:translateY(-4px);box-shadow:0 12px 40px rgba(108,92,231,.12)}
+.feature-icon{width:48px;height:48px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;margin-bottom:18px;background:linear-gradient(135deg,rgba(108,92,231,.12),rgba(0,206,201,.08));border:1px solid rgba(108,92,231,.2)}
+.feature-card h3{font-size:1.05rem;font-weight:600;margin-bottom:8px}
+.feature-card p{font-size:.875rem;color:var(--text2);line-height:1.65}
+
+/* Code  */
+.code-section{padding:0 0 120px}
+.code-block{background:var(--surface);border:1px solid var(--border);border-radius:16px;overflow:hidden;max-width:680px;margin:0 auto}
+.code-header{padding:14px 20px;background:var(--surface2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.code-dot{width:11px;height:11px;border-radius:50%;background:var(--border)}
+.code-dot:nth-child(1){background:#ff5f57}.code-dot:nth-child(2){background:#febc2e}.code-dot:nth-child(3){background:#28c840}
+.code-title{margin-left:12px;font-size:.8rem;color:var(--text3);font-family:'JetBrains Mono',monospace}
+.code-body{padding:24px;font-family:'JetBrains Mono',monospace;font-size:.82rem;line-height:1.9;color:var(--text2);overflow-x:auto}
+.code-body .kw{color:#6c5ce7}.code-body .str{color:#00cec9}.code-body .cm{color:#4a4a6a;font-style:italic}.code-body .fn{color:#a29bfe}
+
+/* Footer */
+footer{padding:40px 0;border-top:1px solid var(--border);text-align:center}
+footer p{color:var(--text3);font-size:.8rem}
+footer a{color:var(--accent2);text-decoration:none}
+footer a:hover{text-decoration:underline}
+
+/* Responsive */
+@media(max-width:768px){
+  .stats{grid-template-columns:repeat(2,1fr)}
+  .feature-grid{grid-template-columns:1fr}
+  .nav{display:none}
+  h1{font-size:2rem}
+}
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<div class="bg-glow bg-glow-1"></div>
+<div class="bg-glow bg-glow-2"></div>
+
+<header>
+  <div class="container">
+    <a href="/" class="logo">
+      <div class="logo-icon">G</div>
+      ms-gateway
+    </a>
+    <div class="nav">
+      <a href="#features">Features</a>
+      <a href="#quickstart">Quick Start</a>
+      <a href="/health">Health</a>
+      <a href="/metrics">Metrics</a>
+    </div>
+    <a href="https://github.com/fangbc5/ms-gateway" target="_blank" class="btn-gh">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 .3a12 12 0 00-3.8 23.38c.6.12.83-.26.83-.57v-2.23c-3.34.73-4.04-1.42-4.04-1.42a3.18 3.18 0 00-1.33-1.76c-1.09-.74.08-.73.08-.73a2.52 2.52 0 011.84 1.24 2.56 2.56 0 003.5 1 2.56 2.56 0 01.76-1.61c-2.67-.3-5.47-1.33-5.47-5.93a4.64 4.64 0 011.24-3.22 4.3 4.3 0 01.12-3.18s1-.33 3.3 1.23a11.38 11.38 0 016 0c2.28-1.56 3.29-1.23 3.29-1.23a4.3 4.3 0 01.12 3.18 4.64 4.64 0 011.23 3.22c0 4.61-2.81 5.63-5.48 5.92a2.86 2.86 0 01.82 2.22v3.29c0 .31.22.69.83.57A12 12 0 0012 .3"/></svg>
+      GitHub
+    </a>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="hero-inner">
+    <div class="badge">Running on Rust + Axum</div>
+    <h1>Blazing-Fast<br><span class="gradient">API Gateway</span></h1>
+    <p>高性能、轻量级的 Rust 微服务网关。动态路由、服务发现、健康检查、限流、JWT 鉴权，开箱即用。</p>
+    <div class="hero-actions">
+      <a href="https://github.com/fangbc5/ms-gateway" target="_blank" class="btn-primary">⭐ Star on GitHub</a>
+      <a href="https://github.com/fangbc5/ms-gateway#readme" target="_blank" class="btn-secondary">Documentation</a>
+    </div>
+
+    <div class="stats">
+      <div class="stat"><div class="stat-value">&lt;1ms</div><div class="stat-label">Proxy Latency</div></div>
+      <div class="stat"><div class="stat-value">Async</div><div class="stat-label">Non-blocking I/O</div></div>
+      <div class="stat"><div class="stat-value">Zero</div><div class="stat-label">GC Pause</div></div>
+      <div class="stat"><div class="stat-value">Hot</div><div class="stat-label">Reload Routes</div></div>
+    </div>
+  </div>
+</section>
+
+<section class="features" id="features">
+  <div class="container">
+    <div class="section-title">
+      <h2>Core Features</h2>
+      <p>Production-ready capabilities for modern microservice architectures</p>
+    </div>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🔀</div>
+        <h3>Dynamic Routing</h3>
+        <p>Wildcard and path-variable patterns with pre-compiled regex. Hot-reload via file watcher or POST /_reload.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⚡</div>
+        <h3>Load Balancing</h3>
+        <p>Round-robin, weighted random, and consistent IP-hash strategies. Pluggable, per-route configurable.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔐</div>
+        <h3>JWT Authentication</h3>
+        <p>Automatic token validation with configurable whitelist bypass. Pre-constructed decoding key for zero overhead.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🩺</div>
+        <h3>Health Checks</h3>
+        <p>Active upstream probing with configurable thresholds. Auto-remove unhealthy nodes, auto-recover when healthy.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌐</div>
+        <h3>Nacos Integration</h3>
+        <p>Pluggable service discovery and config center. Subscribe to instance changes, dynamic upstream resolution.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📊</div>
+        <h3>Prometheus Metrics</h3>
+        <p>Request count, latency histograms, and status code breakdowns. Template-based labels prevent cardinality explosion.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🚦</div>
+        <h3>Rate Limiting</h3>
+        <p>Global QPS cap + per-client rate limiting powered by Governor. Protects upstream services from overload.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔌</div>
+        <h3>WebSocket Proxy</h3>
+        <p>Transparent WebSocket upgrade and bidirectional pass-through. Full HTTP/1.1 101 handshake support.</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🌊</div>
+        <h3>Streaming Body</h3>
+        <p>Zero-copy streaming request/response forwarding. No full-body buffering — ideal for large payloads.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="code-section" id="quickstart">
+  <div class="container">
+    <div class="section-title">
+      <h2>Quick Start</h2>
+      <p>Get your gateway running in seconds</p>
+    </div>
+    <div class="code-block">
+      <div class="code-header">
+        <span class="code-dot"></span><span class="code-dot"></span><span class="code-dot"></span>
+        <span class="code-title">terminal</span>
+      </div>
+      <div class="code-body">
+<span class="cm"># Clone the repository</span>
+$ <span class="fn">git clone</span> <span class="str">https://github.com/fangbc5/ms-gateway.git</span>
+$ <span class="fn">cd</span> ms-gateway
+
+<span class="cm"># Configure your environment</span>
+$ <span class="fn">cp</span> .env.example .env
+$ <span class="fn">vim</span> .env <span class="cm"># edit JWT key, QPS, etc.</span>
+
+<span class="cm"># Run the gateway</span>
+$ <span class="fn">cargo run</span> <span class="kw">--release</span>
+<span class="str">🚀 Gateway listening on http://0.0.0.0:8080</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="container">
+    <p>ms-gateway · Built with 🦀 Rust & <a href="https://github.com/tokio-rs/axum" target="_blank">Axum</a> · <a href="https://github.com/fangbc5/ms-gateway" target="_blank">GitHub</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -3,9 +3,11 @@ use std::sync::Arc;
 
 use crate::config::{NacosSettings, Settings};
 
-/// 订阅服务发现（监听路由中配置的 service_name 对应的实例变更）
-pub async fn subscribe_services(config: &NacosSettings) {
-    if config.subscribe_services.is_empty() {
+/// 订阅单个服务的实例变更
+pub async fn subscribe_one_service(service_name: &str, group: &str) {
+    // 检查是否已订阅（避免重复）
+    if super::SERVICE_INSTANCES.contains_key(service_name) {
+        tracing::debug!("服务 {} 已订阅，跳过", service_name);
         return;
     }
 
@@ -14,63 +16,59 @@ pub async fn subscribe_services(config: &NacosSettings) {
         None => return,
     };
 
-    let group = config.group.clone();
+    let svc = service_name.to_string();
+    let grp = group.to_string();
 
-    for service_name in &config.subscribe_services {
-        let svc = service_name.clone();
-        let grp = group.clone();
+    struct SvcListener { service_name: String, group: String }
 
-        struct SvcListener { service_name: String, group: String }
+    impl InstanceListener for SvcListener {
+        fn get_key(&self) -> ServiceInstanceKey {
+            ServiceInstanceKey::new(&self.service_name, &self.group)
+        }
 
-        impl InstanceListener for SvcListener {
-            fn get_key(&self) -> ServiceInstanceKey {
-                ServiceInstanceKey::new(&self.service_name, &self.group)
-            }
+        fn change(
+            &self,
+            _key: &ServiceInstanceKey,
+            value: &Vec<Arc<Instance>>,
+            add_list: &Vec<Arc<Instance>>,
+            remove_list: &Vec<Arc<Instance>>,
+        ) {
+            tracing::info!(
+                "🔄 服务 {} 实例变更 (全量:{}, 新增:{}, 移除:{})",
+                self.service_name, value.len(), add_list.len(), remove_list.len()
+            );
+            super::update_service_instances(&self.service_name, value.clone());
 
-            fn change(
-                &self,
-                _key: &ServiceInstanceKey,
-                value: &Vec<Arc<Instance>>,
-                add_list: &Vec<Arc<Instance>>,
-                remove_list: &Vec<Arc<Instance>>,
-            ) {
-                tracing::info!(
-                    "🔄 服务 {} 实例变更 (全量:{}, 新增:{}, 移除:{})",
-                    self.service_name, value.len(), add_list.len(), remove_list.len()
+            for inst in value {
+                tracing::debug!(
+                    "  - {}:{} (healthy: {})",
+                    inst.ip, inst.port, inst.healthy
                 );
-                super::update_service_instances(&self.service_name, value.clone());
-
-                for inst in value {
-                    tracing::debug!(
-                        "  - {}:{} (healthy: {})",
-                        inst.ip, inst.port, inst.healthy
-                    );
-                }
             }
         }
+    }
 
-        let listener = Box::new(SvcListener {
-            service_name: svc.clone(),
-            group: grp.clone(),
-        });
+    let listener = Box::new(SvcListener {
+        service_name: svc.clone(),
+        group: grp.clone(),
+    });
 
-        match naming_client.subscribe(listener).await {
-            Ok(_) => tracing::info!("📡 已订阅服务发现: {}", svc),
-            Err(e) => {
-                tracing::error!("订阅服务 {} 失败: {}", svc, e);
-                continue;
-            }
+    match naming_client.subscribe(listener).await {
+        Ok(_) => tracing::info!("📡 已自动订阅服务: {}", svc),
+        Err(e) => {
+            tracing::error!("订阅服务 {} 失败: {}", svc, e);
+            return;
         }
+    }
 
-        // 立即获取当前实例列表
-        let params = QueryInstanceListParams::new_simple(&svc, &grp);
-        match naming_client.query_instances(params).await {
-            Ok(instances) => {
-                tracing::info!("获取 {} 当前实例: {} 个", svc, instances.len());
-                super::update_service_instances(&svc, instances);
-            }
-            Err(e) => tracing::warn!("获取 {} 当前实例失败: {}", svc, e),
+    // 立即获取当前实例列表
+    let params = QueryInstanceListParams::new_simple(&svc, &grp);
+    match naming_client.query_instances(params).await {
+        Ok(instances) => {
+            tracing::info!("获取 {} 当前实例: {} 个", svc, instances.len());
+            super::update_service_instances(&svc, instances);
         }
+        Err(e) => tracing::warn!("获取 {} 当前实例失败: {}", svc, e),
     }
 }
 
@@ -91,7 +89,7 @@ pub async fn register_self(nacos_config: &NacosSettings, settings: &Settings) {
     let (ip, port) = parse_bind_addr(&settings.gateway_bind);
 
     let instance = Instance::new_simple(
-        &ip, port, &service_name, &nacos_config.group,
+        &ip, port, &service_name, &nacos_config.naming_group,
     );
 
     naming_client.register(instance);

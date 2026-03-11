@@ -55,7 +55,7 @@ fn build_router(
     let rate_limits = rate_limit::init_rate_limits(settings);
 
     Router::new()
-        .route("/", get(|| async { "Rust Gateway is running 🚀" }))
+        .route("/", get(landing_page))
         .route("/health", get(health_check_endpoint))
         .route("/metrics", get(metrics::metrics_handler))
         .route("/_reload", post(reload_routes))
@@ -113,6 +113,11 @@ fn build_cors(settings: &config::Settings) -> CorsLayer {
                 .allow_headers(Any)
         }
     }
+}
+
+/// 首页落地页
+async fn landing_page() -> impl IntoResponse {
+    axum::response::Html(include_str!("../static/index.html"))
 }
 
 /// 健康检查端点

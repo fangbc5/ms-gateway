@@ -1,6 +1,6 @@
 mod client;
 mod nacos_config;
-mod discovery;
+pub(crate) mod discovery;
 
 use dashmap::DashMap;
 use nacos_rust_client::client::naming_client::Instance;
@@ -35,6 +35,7 @@ pub fn instances_to_upstreams(service_name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+
 /// 条件初始化 Nacos（配置开关控制）
 pub async fn init_if_enabled(settings: &Settings, shared_rules: &SharedRouteRules) {
     let nacos_settings = match &settings.nacos {
@@ -51,17 +52,16 @@ pub async fn init_if_enabled(settings: &Settings, shared_rules: &SharedRouteRule
         return;
     }
 
-    // 2. 从 Nacos 拉取路由配置（优先于本地 routes.toml，但低于环境变量）
-    nacos_config::fetch_and_apply_routes(nacos_settings, shared_rules).await;
-
-    // 3. 订阅路由配置变更
+    // 2. 从 Nacos 拉取路由配置并订阅变更（合并为一步，避免重复加载）
+    //    订阅时 listener 会立即收到当前配置值，等同于 fetch + subscribe
     nacos_config::subscribe_route_changes(nacos_settings, shared_rules).await;
 
-    // 4. 订阅服务发现
-    discovery::subscribe_services(nacos_settings).await;
-
-    // 5. 注册网关自身
+    // 3. 注册网关自身 + 订阅自身服务
     if nacos_settings.register_enabled {
         discovery::register_self(nacos_settings, settings).await;
+        // 自注册后也订阅自身，方便其他路由引用
+        let self_name = nacos_settings.service_name.clone()
+            .unwrap_or_else(|| "ms-gateway".to_string());
+        discovery::subscribe_one_service(&self_name, &nacos_settings.naming_group).await;
     }
 }
