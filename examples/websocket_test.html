@@ -25,7 +25,7 @@
         .config-row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; }
         .config-row label { min-width: 70px; font-size: 13px; color: #666; }
         .config-row input { flex: 1; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
-        .btn-row { display: flex; gap: 8px; margin-bottom: 16px; }
+        .btn-row { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
         .btn {
             padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer;
             font-size: 13px; font-weight: 600; transition: all 0.2s;
@@ -41,6 +41,10 @@
         .btn-heartbeat:hover:not(:disabled) { background: #d97706; }
         .btn-clear { background: #6b7280; color: #fff; }
         .btn-clear:hover:not(:disabled) { background: #4b5563; }
+        .btn-chat { background: #8b5cf6; color: #fff; }
+        .btn-chat:hover:not(:disabled) { background: #7c3aed; }
+        .btn-online { background: #06b6d4; color: #fff; }
+        .btn-online:hover:not(:disabled) { background: #0891b2; }
         .msg-type-row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
         .msg-type-row select { flex: 1; padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; }
         .send-area { display: flex; gap: 8px; margin-bottom: 16px; }
@@ -58,7 +62,21 @@
         .log-entry.received { color: #a6e3a1; }
         .log-entry.system { color: #f9e2af; }
         .log-entry.error { color: #f38ba8; }
+        .log-entry.chat { color: #cba6f7; }
         .log-time { color: #6c7086; margin-right: 8px; }
+
+        /* 聊天输入区 */
+        .chat-section {
+            background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px;
+            padding: 12px; margin-bottom: 16px;
+        }
+        .chat-section h3 { font-size: 14px; color: #334155; margin-bottom: 8px; }
+        .chat-input-row { display: flex; gap: 8px; }
+        .chat-input-row input {
+            flex: 1; padding: 8px 12px; border: 1px solid #d1d5db; border-radius: 6px;
+            font-size: 14px;
+        }
+        .chat-input-row input:focus { outline: none; border-color: #8b5cf6; box-shadow: 0 0 0 2px rgba(139,92,246,0.2); }
 
         /* 中间连接指示 */
         .connection-indicator {
@@ -76,6 +94,16 @@
         }
         .template-btn:hover { background: #d1d5db; }
 
+        /* 全局工具栏 */
+        .toolbar {
+            max-width: 1400px; margin: 0 auto 16px; display: flex; gap: 8px;
+            align-items: center; flex-wrap: wrap;
+        }
+        .toolbar label { font-size: 13px; color: #666; }
+        .toolbar input {
+            padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 6px; font-size: 13px; width: 280px;
+        }
+
         @media (max-width: 900px) {
             .container { flex-direction: column; }
             .connection-indicator { flex-direction: row; min-width: unset; }
@@ -84,6 +112,14 @@
 </head>
 <body>
     <h1>🔌 WebSocket 双用户通讯测试</h1>
+
+    <!-- 全局配置 -->
+    <div class="toolbar">
+        <label>Push API:</label>
+        <input id="pushApiBase" value="http://localhost:8080" placeholder="Gateway 地址" />
+        <button class="btn btn-online" onclick="queryOnline()">📡 查询在线用户</button>
+        <span id="onlineInfo" style="font-size: 12px; color: #666;"></span>
+    </div>
 
     <div class="container">
         <!-- 用户 A -->
@@ -111,6 +147,15 @@
                 <button class="btn btn-clear" onclick="clearLog('a')">清空</button>
             </div>
 
+            <!-- 💬 聊天发送区 -->
+            <div class="chat-section">
+                <h3>💬 发送文本消息给对方</h3>
+                <div class="chat-input-row">
+                    <input id="chatInput-a" placeholder="输入消息内容..." onkeydown="if(event.key==='Enter')sendChat('a')" />
+                    <button class="btn btn-chat" onclick="sendChat('a')">发送</button>
+                </div>
+            </div>
+
             <div class="msg-type-row">
                 <select id="msgType-a" onchange="updateDataTemplate('a')">
                     <option value="2">心跳 (type=2)</option>
@@ -136,7 +181,7 @@
                 <textarea id="data-a" placeholder="消息 data 字段 (JSON)">{"type": 2, "data": {}}</textarea>
             </div>
             <div class="btn-row">
-                <button class="btn btn-send" id="sendBtn-a" onclick="sendMessage('a')" disabled>发送消息</button>
+                <button class="btn btn-send" id="sendBtn-a" onclick="sendMessage('a')" disabled>发送原始消息</button>
             </div>
             <div class="log-area" id="log-a"></div>
         </div>
@@ -173,6 +218,15 @@
                 <button class="btn btn-clear" onclick="clearLog('b')">清空</button>
             </div>
 
+            <!-- 💬 聊天发送区 -->
+            <div class="chat-section">
+                <h3>💬 发送文本消息给对方</h3>
+                <div class="chat-input-row">
+                    <input id="chatInput-b" placeholder="输入消息内容..." onkeydown="if(event.key==='Enter')sendChat('b')" />
+                    <button class="btn btn-chat" onclick="sendChat('b')">发送</button>
+                </div>
+            </div>
+
             <div class="msg-type-row">
                 <select id="msgType-b" onchange="updateDataTemplate('b')">
                     <option value="2">心跳 (type=2)</option>
@@ -198,13 +252,16 @@
                 <textarea id="data-b" placeholder="消息 data 字段 (JSON)">{"type": 2, "data": {}}</textarea>
             </div>
             <div class="btn-row">
-                <button class="btn btn-send" id="sendBtn-b" onclick="sendMessage('b')" disabled>发送消息</button>
+                <button class="btn btn-send" id="sendBtn-b" onclick="sendMessage('b')" disabled>发送原始消息</button>
             </div>
             <div class="log-area" id="log-b"></div>
         </div>
     </div>
 
     <script>
+        // ============ 全局配置 ============
+        let msgIdCounter = Date.now();
+
         // ============ 连接管理 ============
         const sockets = { a: null, b: null };
         const heartbeatTimers = { a: null, b: null };
@@ -229,7 +286,6 @@
                 ws.onopen = () => {
                     setStatus(user, true);
                     addLog(user, 'system', `✅ 已连接 (uid=${uid}, clientId=${clientId})`);
-                    // 启动自动心跳 (每 15 秒)
                     startHeartbeat(user);
                 };
 
@@ -237,6 +293,12 @@
                     let display = event.data;
                     try {
                         const parsed = JSON.parse(event.data);
+                        // 聊天消息 (type=1001) 特殊显示
+                        if (parsed.type === 1001 && parsed.data) {
+                            const d = parsed.data;
+                            addLog(user, 'chat', `💬 收到消息 [来自 uid=${d.from_uid}]: ${d.content}`);
+                            return;
+                        }
                         display = JSON.stringify(parsed, null, 2);
                     } catch (e) { /* 非 JSON 原样显示 */ }
                     addLog(user, 'received', `📩 收到: ${display}`);
@@ -270,9 +332,7 @@
             stopHeartbeat(user);
             heartbeatTimers[user] = setInterval(() => {
                 if (sockets[user] && sockets[user].readyState === WebSocket.OPEN) {
-                    const msg = JSON.stringify({ type: 2, data: {} });
-                    sockets[user].send(msg);
-                    addLog(user, 'sent', `💓 自动心跳: ${msg}`);
+                    sockets[user].send(JSON.stringify({ type: 2, data: {} }));
                 }
             }, 15000);
         }
@@ -292,7 +352,77 @@
             }
         }
 
-        // ============ 发送消息 ============
+        // ============ 💬 聊天消息（通过 HTTP Push API）============
+        async function sendChat(user) {
+            const input = document.getElementById(`chatInput-${user}`);
+            const content = input.value.trim();
+            if (!content) return;
+
+            const myUid = parseInt(document.getElementById(`uid-${user}`).value) || 0;
+            const otherUser = user === 'a' ? 'b' : 'a';
+            const otherUid = parseInt(document.getElementById(`uid-${otherUser}`).value) || 0;
+            const pushApiBase = document.getElementById('pushApiBase').value.replace(/\/$/, '');
+
+            if (!myUid || !otherUid) {
+                addLog(user, 'error', '请先设置双方 UID');
+                return;
+            }
+
+            const msgId = ++msgIdCounter;
+            const payload = {
+                type: 1001,
+                data: {
+                    msg_id: msgId,
+                    from_uid: myUid,
+                    to_uid: otherUid,
+                    content: content,
+                    msg_type: "text",
+                    timestamp: Date.now()
+                },
+                target_uids: [otherUid],
+                sender_uid: myUid
+            };
+
+            addLog(user, 'chat', `💬 发送消息给 uid=${otherUid}: ${content}`);
+            input.value = '';
+
+            try {
+                const resp = await fetch(`${pushApiBase}/api/test/push`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!resp.ok) {
+                    const text = await resp.text();
+                    addLog(user, 'error', `❌ HTTP ${resp.status}: ${text.substring(0, 200)}`);
+                    return;
+                }
+                const result = await resp.json();
+                if (result.success) {
+                    addLog(user, 'system', `✅ 推送成功 (delivered=${result.delivered_count}/${result.target_count})`);
+                } else {
+                    addLog(user, 'error', `❌ 推送失败: ${result.message || JSON.stringify(result)}`);
+                }
+            } catch (e) {
+                addLog(user, 'error', `❌ HTTP 请求失败: ${e.message}`);
+            }
+        }
+
+        // ============ 查询在线用户 ============
+        async function queryOnline() {
+            const pushApiBase = document.getElementById('pushApiBase').value.replace(/\/$/, '');
+            const infoEl = document.getElementById('onlineInfo');
+            try {
+                const resp = await fetch(`${pushApiBase}/api/test/online`);
+                const data = await resp.json();
+                const userList = data.users.map(u => `uid=${u.uid}(${u.session_count}连接)`).join(', ');
+                infoEl.textContent = `在线: ${data.total_users} 用户, ${data.total_sessions} 会话 | ${userList || '无'}`;
+            } catch (e) {
+                infoEl.textContent = `查询失败: ${e.message}`;
+            }
+        }
+
+        // ============ 发送原始 WebSocket 消息 ============
         function sendMessage(user) {
             const ws = sockets[user];
             if (!ws || ws.readyState !== WebSocket.OPEN) {
@@ -302,7 +432,6 @@
 
             const raw = document.getElementById(`data-${user}`).value.trim();
             try {
-                // 验证是合法 JSON
                 const parsed = JSON.parse(raw);
                 const msg = JSON.stringify(parsed);
                 ws.send(msg);
@@ -323,14 +452,12 @@
 
         function applyTemplate(user, name) {
             const tpl = JSON.parse(JSON.stringify(templates[name]));
-            // 自动填充 target_uid 为对方的 uid
             const otherUser = user === 'a' ? 'b' : 'a';
             const otherUid = parseInt(document.getElementById(`uid-${otherUser}`).value) || 0;
             if (tpl.data && tpl.data.target_uid !== undefined) {
                 tpl.data.target_uid = otherUid;
             }
             document.getElementById(`data-${user}`).value = JSON.stringify(tpl, null, 2);
-            // 同步选择器
             const select = document.getElementById(`msgType-${user}`);
             const opt = Array.from(select.options).find(o => parseInt(o.value) === tpl.type);
             if (opt) select.value = opt.value;

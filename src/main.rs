@@ -2,6 +2,7 @@ use axum::{Router, routing::get, Extension};
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
 use std::net::SocketAddr;
+use tower_http::cors::{CorsLayer, Any};
 
 mod proxy;
 mod auth;
@@ -28,11 +29,18 @@ async fn main() -> anyhow::Result<()> {
     // 加载路由前缀规则，并注入扩展
     let route_rules = config::load_route_rules().unwrap_or_default();
 
+    // CORS 放行
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     // 路由
     let app = Router::new()
         .route("/", get(|| async { "Rust Gateway is running 🚀" }))
         .route("/metrics", get(metrics::metrics_handler))
         .merge(proxy::router())
+        .layer(cors)
         .layer(axum::middleware::from_fn(metrics::prometheus_middleware))
         .layer(Extension(settings.clone()))
         .layer(Extension(rate_limits.clone()))

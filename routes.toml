@@ -8,3 +8,9 @@ prefix = ["/ws", "/ws/**", "/wss", "/wss/**"]
 upstream = ["http://host.docker.internal:30001"]
 # 开放 WebSocket 路径的鉴权（示例：全部放行）
 whitelist = ["/ws", "/ws/**", "/wss", "/wss/**"]
+
+# ms-websocket 测试接口（推送消息、查询在线用户）
+[[routes]]
+prefix = ["/api/test/**"]
+upstream = "http://host.docker.internal:30001"
+whitelist = ["/api/test/**"]
