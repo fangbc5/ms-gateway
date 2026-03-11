@@ -142,6 +142,11 @@ impl RoutePattern {
         None
     }
 
+    /// 获取原始 pattern 字符串
+    pub fn pattern(&self) -> &str {
+        &self.pattern
+    }
+
     /// 检查是否匹配路径（不提取变量）
     pub fn matches(&self, path: &str) -> bool {
         self.regex.is_match(path)
@@ -155,6 +160,15 @@ impl Clone for RoutePattern {
             regex: self.regex.clone(),
             var_names: self.var_names.clone(),
         }
+    }
+}
+
+impl std::fmt::Debug for RoutePattern {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RoutePattern")
+            .field("pattern", &self.pattern)
+            .field("var_names", &self.var_names)
+            .finish()
     }
 }
 

@@ -10,6 +10,7 @@ use tracing::info;
 use crate::config::Settings;
 use crate::rate_limit::rate_limit_layer;
 use std::sync::Arc;
+use std::net::SocketAddr;
 use std::time::Duration;
 use dashmap::DashMap;
 use once_cell::sync::Lazy;
@@ -66,6 +67,10 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
 
     let settings = req.extensions().get::<Settings>().cloned();
     let route_rules = req.extensions().get::<Vec<crate::config::RouteRule>>().cloned();
+    // 提取客户端地址（用于 IP Hash 负载均衡）
+    let client_addr = req.extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0);
 
     // 去掉 /proxy 前缀
     let full_path = req.uri().path();
@@ -77,7 +82,7 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
         if let Some(best_match) = find_best_match(rules, match_path) {
             let path_variables = best_match.extract_variables(match_path);
             let selected_upstream = get_or_create_balancer(&best_match.upstream, &best_match.strategy)
-                .select(None)
+                .select(client_addr.as_ref())
                 .unwrap_or_else(|| best_match.upstream[0].clone());
             let forward_path = reconstruct_forward_path(match_path, &best_match.prefix, &path_variables);
             Some((selected_upstream, forward_path))
@@ -133,21 +138,10 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
         rb = rb.header(name, value);
     }
 
-    // 读取请求体并转换为reqwest::Body
-    let body_bytes = match axum::body::to_bytes(req.into_body(), usize::MAX).await {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            return Response::builder()
-                .status(500)
-                .header(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")
-                .body(Body::from(format!("{{\"error\":\"Body read error: {}\"}}", err)))
-                .unwrap();
-        }
-    };
-
-    // 流式转发 body
+    // 流式转发请求体（避免全量缓冲到内存）
+    let body_stream = req.into_body().into_data_stream();
     let resp_result = rb
-        .body(body_bytes)
+        .body(reqwest::Body::wrap_stream(body_stream))
         .send()
         .await;
 
@@ -168,19 +162,9 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
                 builder = builder.header(axum::http::header::CONTENT_TYPE, "application/octet-stream");
             }
 
-            // 读取响应体
-            let bytes = match resp.bytes().await {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    return Response::builder()
-                        .status(500)
-                        .header(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")
-                        .body(Body::from(format!("{{\"error\":\"Response body error: {}\"}}", err)))
-                        .unwrap();
-                }
-            };
-
-            builder.body(Body::from(bytes)).unwrap()
+            // 流式转发响应体（避免全量缓冲到内存）
+            let body_stream = resp.bytes_stream();
+            builder.body(Body::from_stream(body_stream)).unwrap()
         }
         Err(err) => Response::builder()
             .status(500)
@@ -255,31 +239,14 @@ async fn check_whitelist_middleware(mut req: Request<Body>, next: Next) -> Respo
     tracing::debug!("白名单检查: 原始路径={}, 匹配路径={}", path, match_path);
 
     if let Some(rules) = req.extensions().get::<Vec<crate::config::RouteRule>>() {
-        // 找到第一个匹配的路由，检查其 whitelist 是否命中
         if let Some(rule) = find_best_match(rules, match_path) {
             tracing::debug!("找到匹配规则: prefix={:?}, whitelist={:?}", rule.prefix, rule.whitelist);
-            if let Some(whitelist) = &rule.whitelist {
-                // 任意一个白名单模式命中即可
-                let hit = whitelist.iter().any(|w| {
-                    // 复用 RouteRule 的匹配逻辑
-                    // 这里把单个白名单项当作一个前缀来匹配
-                    let matched = if w.contains('{') || w.contains('*') || w.contains('?') {
-                        crate::path_matcher::RoutePattern::from_pattern(w)
-                            .map(|rp| rp.matches(match_path))
-                            .unwrap_or(false)
-                    } else {
-                        match_path == w || match_path.starts_with(&format!("{}/", w))
-                    };
-                    tracing::debug!("白名单项 '{}' 匹配 '{}': {}", w, match_path, matched);
-                    matched
-                });
-                if hit {
-                    tracing::info!("✓ 白名单命中，跳过鉴权: {}", match_path);
-                    // 标记跳过鉴权
-                    req.extensions_mut().insert(WhitelistBypass);
-                } else {
-                    tracing::warn!("✗ 白名单未命中: {}", match_path);
-                }
+            // 使用预编译的白名单模式匹配（无锁）
+            if rule.is_whitelist_hit(match_path) {
+                tracing::info!("✓ 白名单命中，跳过鉴权: {}", match_path);
+                req.extensions_mut().insert(WhitelistBypass);
+            } else if rule.whitelist.is_some() {
+                tracing::warn!("✗ 白名单未命中: {}", match_path);
             }
         } else {
             tracing::warn!("未找到匹配的路由规则: {}", match_path);

@@ -18,6 +18,13 @@ pub struct RouteRule {
     // 白名单路径（命中则跳过鉴权），支持 string 或 array
     #[serde(default, deserialize_with = "opt_vec_string_deser::deserialize")] 
     pub whitelist: Option<Vec<String>>,
+    // ===== 预编译字段（启动时填充，避免运行时 Mutex 竞争）=====
+    /// 预编译的前缀匹配模式
+    #[serde(skip)]
+    pub compiled_prefixes: Vec<RoutePattern>,
+    /// 预编译的白名单匹配模式
+    #[serde(skip)]
+    pub compiled_whitelist: Vec<RoutePattern>,
 }
 
 // 默认负载均衡策略
@@ -109,37 +116,89 @@ impl Settings {
 
 // 增强的路径匹配器
 impl RouteRule {
+    /// 预编译所有前缀和白名单的正则模式（启动时调用一次）
+    pub fn compile_patterns(&mut self) {
+        // 预编译前缀
+        self.compiled_prefixes = self.prefix.iter()
+            .filter_map(|p| {
+                if p.contains('{') || p.contains('*') || p.contains('?') {
+                    RoutePattern::from_pattern(p).ok()
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // 预编译白名单
+        if let Some(whitelist) = &self.whitelist {
+            self.compiled_whitelist = whitelist.iter()
+                .filter_map(|w| {
+                    if w.contains('{') || w.contains('*') || w.contains('?') {
+                        RoutePattern::from_pattern(w).ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
+    }
+
     pub fn matches(&self, path: &str) -> bool {
-        // 检查任意一个前缀是否匹配
-        for prefix in &self.prefix {
-            if self.matches_prefix(prefix, path) {
+        for (i, prefix) in self.prefix.iter().enumerate() {
+            if self.matches_prefix_compiled(prefix, path, i) {
                 return true;
             }
         }
         false
     }
 
-    fn matches_prefix(&self, prefix: &str, path: &str) -> bool {
-        // 检查是否包含模式匹配字符
+    fn matches_prefix_compiled(&self, prefix: &str, path: &str, _prefix_idx: usize) -> bool {
         if prefix.contains('{') || prefix.contains('*') || prefix.contains('?') {
-            // 使用模式匹配
+            // 优先使用预编译的模式（无锁）
+            if let Some(compiled) = self.compiled_prefixes.iter().find(|rp| rp.pattern() == prefix) {
+                return compiled.matches(path);
+            }
+            // 回退到缓存（极少触发）
             match RoutePattern::from_pattern(prefix) {
                 Ok(route_pattern) => route_pattern.matches(path),
-                Err(_) => {
-                    // 如果模式编译失败，回退到简单前缀匹配
-                    path.starts_with(prefix)
-                }
+                Err(_) => path.starts_with(prefix),
             }
         } else {
-            // 传统前缀匹配：精确匹配或前缀匹配
             path == prefix || path.starts_with(&format!("{}/", prefix))
         }
     }
 
+    /// 检查路径是否命中白名单（使用预编译模式，无锁）
+    pub fn is_whitelist_hit(&self, path: &str) -> bool {
+        if let Some(whitelist) = &self.whitelist {
+            for w in whitelist {
+                let matched = if w.contains('{') || w.contains('*') || w.contains('?') {
+                    // 优先使用预编译的白名单模式
+                    if let Some(compiled) = self.compiled_whitelist.iter().find(|rp| rp.pattern() == w) {
+                        compiled.matches(path)
+                    } else {
+                        RoutePattern::from_pattern(w)
+                            .map(|rp| rp.matches(path))
+                            .unwrap_or(false)
+                    }
+                } else {
+                    path == w || path.starts_with(&format!("{}/", w))
+                };
+                if matched {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     pub fn extract_variables(&self, path: &str) -> HashMap<String, String> {
-        // 找到匹配的前缀并提取变量
-        for prefix in &self.prefix {
-            if self.matches_prefix(prefix, path) {
+        for (i, prefix) in self.prefix.iter().enumerate() {
+            if self.matches_prefix_compiled(prefix, path, i) {
+                // 优先使用预编译模式
+                if let Some(compiled) = self.compiled_prefixes.iter().find(|rp| rp.pattern() == prefix) {
+                    return compiled.match_path(path).unwrap_or_default();
+                }
                 match RoutePattern::from_pattern(prefix) {
                     Ok(route_pattern) => return route_pattern.match_path(path).unwrap_or_default(),
                     Err(_) => return HashMap::new(),
@@ -208,15 +267,17 @@ pub fn load_route_rules() -> Result<Vec<RouteRule>, ConfigError> {
         .build()?;
 
     // 反序列化到结构体
-    let rf: RoutesFile = c.try_deserialize()?;
+    let mut rf: RoutesFile = c.try_deserialize()?;
 
-    // 校验所有路由规则
-    for (i, rule) in rf.routes.iter().enumerate() {
+    // 校验并预编译所有路由规则
+    for (i, rule) in rf.routes.iter_mut().enumerate() {
         if let Err(err) = rule.validate() {
             return Err(ConfigError::Message(format!(
                 "路由规则 #{} 配置错误: {}", i + 1, err
             )));
         }
+        // 启动时预编译正则，避免运行时 Mutex 竞争
+        rule.compile_patterns();
     }
 
     Ok(rf.routes)
@@ -228,20 +289,29 @@ mod tests {
 
     #[test]
     fn test_route_rule_matching() {
-        let routes = vec![
+        let mut routes = vec![
             RouteRule {
                 prefix: vec!["/user".to_string(), "/users".to_string()],
                 upstream: vec!["http://localhost:30000".to_string()],
                 strategy: "robin".to_string(),
                 whitelist: None,
+                compiled_prefixes: vec![],
+                compiled_whitelist: vec![],
             },
             RouteRule {
                 prefix: vec!["/api/user/{id}".to_string()],
                 upstream: vec!["http://localhost:30001".to_string(), "http://localhost:30002".to_string()],
                 strategy: "random".to_string(),
                 whitelist: None,
+                compiled_prefixes: vec![],
+                compiled_whitelist: vec![],
             },
         ];
+
+        // 预编译模式
+        for rule in &mut routes {
+            rule.compile_patterns();
+        }
 
         let test_cases = vec![
             ("/user", true, "30000"),
@@ -271,6 +341,8 @@ mod tests {
             upstream: vec!["http://localhost:30000".to_string()],
             strategy: "robin".to_string(),
             whitelist: None,
+            compiled_prefixes: vec![],
+            compiled_whitelist: vec![],
         };
         assert!(valid_route.validate().is_ok());
 
@@ -279,6 +351,8 @@ mod tests {
             upstream: vec!["http://localhost:30000".to_string()],
             strategy: "robin".to_string(),
             whitelist: None,
+            compiled_prefixes: vec![],
+            compiled_whitelist: vec![],
         };
         assert!(invalid_prefix.validate().is_err());
 
@@ -287,6 +361,8 @@ mod tests {
             upstream: vec![],
             strategy: "robin".to_string(),
             whitelist: None,
+            compiled_prefixes: vec![],
+            compiled_whitelist: vec![],
         };
         assert!(invalid_upstream.validate().is_err());
 
@@ -295,6 +371,8 @@ mod tests {
             upstream: vec!["http://localhost:30000".to_string()],
             strategy: "unknown".to_string(),
             whitelist: None,
+            compiled_prefixes: vec![],
+            compiled_whitelist: vec![],
         };
         assert!(invalid_strategy.validate().is_err());
     }
