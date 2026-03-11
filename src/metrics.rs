@@ -54,10 +54,10 @@ pub async fn prometheus_middleware(req: Request, next: Next) -> impl IntoRespons
 /// 从请求的路由规则中匹配路由模板路径，避免使用原始路径导致 Prometheus 标签爆炸。
 /// 如 `/api/user/123` -> `/api/user/{id}`
 fn resolve_route_template(req: &Request, match_path: &str) -> String {
-    if let Some(rules) = req.extensions().get::<Vec<crate::config::RouteRule>>() {
-        for rule in rules {
+    if let Some(shared) = req.extensions().get::<crate::config::SharedRouteRules>() {
+        let rules = shared.load();
+        for rule in rules.iter() {
             if rule.matches(match_path) {
-                // 返回规则的第一个匹配前缀作为模板标签
                 return rule.prefix.first()
                     .cloned()
                     .unwrap_or_else(|| "unknown".to_string());

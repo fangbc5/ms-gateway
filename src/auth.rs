@@ -6,7 +6,7 @@ use axum::{
 };
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation, TokenData};
 use serde::{Deserialize, Serialize};
-use crate::config::Settings;
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -57,10 +57,10 @@ where
             return Ok(JwtAuth(Claims { sub: String::new(), exp: 0, tenant_id: String::new() }));
         }
 
-        // we expect Settings stored in extensions for global access
-        let settings = parts
+        // 使用预构造的 DecodingKey（启动时注入，避免每次请求重复构建）
+        let decoding_key = parts
             .extensions
-            .get::<Settings>()
+            .get::<Arc<DecodingKey>>()
             .ok_or(AuthError::ConfigMissing)?
             .clone();
 
@@ -80,13 +80,13 @@ where
 
         let token_data: TokenData<Claims> = decode(
             token,
-            &DecodingKey::from_secret(settings.jwt_decoding_key.as_bytes()),
+            &decoding_key,
             &validation,
         )?;
 
         let claims = token_data.claims;
         
-        // // 将解析后的 Claims 存储到 extensions 中，供后续中间件使用
+        // 将解析后的 Claims 存储到 extensions 中，供后续中间件使用
         parts.extensions.insert(JwtAuth(claims.clone()));
 
         Ok(JwtAuth(claims))

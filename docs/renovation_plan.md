@@ -1,6 +1,6 @@
 # ms-gateway 改造计划
 
-> 版本: v1.0 | 日期: 2026-03-11
+> 版本: v3.3 | 更新日期: 2026-03-11
 
 ---
 
@@ -8,94 +8,83 @@
 
 基于架构分析，按优先级分阶段实施改造。高优先级涉及 **功能性 Bug 修复** 和 **性能/稳定性隐患**。
 
-## 二、高优先级改造 🔴
+## 二、高优先级改造 🔴（已全部完成 ✅）
 
-### 2.1 修复 IP Hash 负载均衡失效
-
-**问题**：`proxy_handler` 调用 `balancer.select(None)`，`IpHashBalancer` 始终对 `127.0.0.1` 做哈希，一致性哈希完全失效。
-
-**改造方案**：
-- 从 `ConnectInfo<SocketAddr>` 提取真实客户端 IP
-- 传入 `balancer.select(Some(&client_addr))`
-
+### 2.1 ✅ 修复 IP Hash 负载均衡失效
+从 `ConnectInfo<SocketAddr>` 提取真实客户端 IP，传入 `balancer.select(Some(&client_addr))`。
 **涉及文件**：`src/proxy.rs`
 
----
+### 2.2 ✅ 修复 Prometheus 指标标签爆炸
+新增 `resolve_route_template()` 函数，使用路由模板路径作为 Prometheus label。
+**涉及文件**：`src/metrics.rs`
 
-### 2.2 修复 Prometheus 指标标签爆炸
-
-**问题**：使用完整请求路径（如 `/api/user/123`）作为 Prometheus label，导致时间序列无限增长，最终 Prometheus OOM。
-
-**改造方案**：
-- 在 `prometheus_middleware` 中匹配路由模板，使用模板路径（如 `/api/user/{id}`）作为标签
-- 未匹配到路由时使用 `"unmatched"` 作为 path 标签
-
-**涉及文件**：`src/metrics.rs`、`src/proxy.rs`
-
----
-
-### 2.3 路径匹配优化：预编译正则 + 移除 Mutex
-
-**问题**：
-1. `PATTERN_CACHE` 使用 `Mutex<HashMap>` 缓存正则，高并发下锁竞争严重
-2. 每次路径匹配都走缓存查找，增加不必要的开销
-
-**改造方案**：
-- 在 `RouteRule` 结构体中新增 `compiled_patterns: Vec<RoutePattern>` 和 `compiled_whitelist: Vec<RoutePattern>` 字段
-- `load_route_rules()` 加载时预编译所有正则
-- `matches()` 和白名单检查直接使用预编译结果，不再走缓存
-- 保留 `PATTERN_CACHE` 供其他动态场景使用，但主请求路径不再依赖
-
+### 2.3 ✅ 路径匹配优化：预编译正则 + 移除 Mutex
+在 `RouteRule` 中预编译正则模式，消除运行时 `Mutex` 竞争。
 **涉及文件**：`src/config.rs`、`src/proxy.rs`、`src/path_matcher.rs`
 
----
-
-### 2.4 请求/响应 Body 流式转发
-
-**问题**：当前将请求体和响应体全量读入内存，大文件时内存爆炸。
-
-**改造方案**：
-- 请求 body：将 `axum::body::Body` 转为 `reqwest::Body::wrap_stream()`，流式转发
-- 响应 body：将 `reqwest::Response` 的 bytes stream 包装为 `axum::body::Body`，流式返回
-- 限制非流式回退的 body 大小上限
-
+### 2.4 ✅ 请求/响应 Body 流式转发
+使用 `Body::from_stream()` 流式转发，避免全量缓冲。
 **涉及文件**：`src/proxy.rs`
 
 ---
 
-## 三、中优先级改造 🟡（后续实施）
+## 三、中优先级改造 🟡（已全部完成 ✅）
 
-| 编号 | 改造项 | 说明 |
-|------|--------|------|
-| 3.1 | 上游健康检查 | 定期探测上游 `/health`，自动剔除不健康节点 |
-| 3.2 | 路由匹配优化 | 用 Trie 树 / HashMap 预筛选替代线性扫描 |
-| 3.3 | per-IP 限流清理 | 定期清理不活跃 IP 的令牌桶状态 |
-| 3.4 | 优雅关闭 | 实现 `with_graceful_shutdown`，等待在途请求 |
-| 3.5 | JWT DecodingKey 缓存 | 启动时预构造，避免每次请求重建 |
+| # | 改造项 | 涉及文件 | 状态 |
+|---|--------|----------|------|
+| 3.1 | 优雅关闭 (Ctrl+C + SIGTERM) | `src/main.rs` | ✅ |
+| 3.2 | JWT DecodingKey 预构造 | `src/main.rs`, `src/auth.rs` | ✅ |
+| 3.3 | 健康检查 `GET /health` | `src/main.rs` | ✅ |
+| 3.4 | CORS 配置化 | `src/config.rs`, `src/main.rs`, `.env.example` | ✅ |
+| 3.5 | WeightedRandom 索引修复 | `src/load_balancer/weighted_random.rs` | ✅ |
+| 3.6 | 生产构建优化 (LTO/strip) | `Cargo.toml` | ✅ |
 
-## 四、低优先级改造 🟢（后续实施）
+---
 
-| 编号 | 改造项 | 说明 |
-|------|--------|------|
-| 4.1 | 反序列化器去重 | 合并 `prefix_deserializer` / `upstream_deserializer` |
-| 4.2 | WeightedRandom 索引修复 | weight=0 节点过滤后索引对齐 |
-| 4.3 | 请求链路追踪 | 添加 `x-request-id` 生成与传播 |
-| 4.4 | 路由热重载 | 文件 watcher 或 reload API |
-| 4.5 | CORS 安全加固 | 限制为已知域名 |
+## 四、低优先级改造 🟢
 
-## 五、验证计划
+### 4.1 ✅ 反序列化器去重
+合并 `prefix_deserializer` / `upstream_deserializer` 为统一的 `string_or_vec_deser` 模块。
+**涉及文件**：`src/config.rs`
 
-### 5.1 编译验证
-```bash
-cargo build 2>&1
-```
+### 4.2 ✅ 请求链路追踪 (x-request-id)
+新增 `request_id_middleware`：优先使用请求携带的 `x-request-id`，否则生成 UUID v4。
+**涉及文件**：`src/main.rs` | **新增依赖**：`uuid` (v4, fast-rng)
 
-### 5.2 单元测试
-```bash
-cargo test 2>&1
-```
+### 4.3 ✅ 路由热重载
+使用 `ArcSwap` + `notify` crate 实现无锁路由规则热重载，支持文件监听和 `POST /_reload` 手动刷新。
+**涉及文件**：`src/config.rs`、`src/main.rs`、`src/proxy.rs`、`src/metrics.rs` | **新增依赖**：`notify` v6
 
-### 5.3 手动验证（后续集成测试时补充）
-- 启动网关 + 上游测试服务，验证路由转发正常
-- 验证 `/metrics` 端点的 path 标签为路由模板而非实际路径
-- 验证不同 IP 的请求分发到不同上游
+### 4.4 ✅ 上游健康检查（剔除 + 恢复）
+后台 tokio task 定期探测上游 `/health`：
+- 连续失败 ≥ `unhealthy_threshold` → 标记不健康，负载均衡跳过
+- 连续成功 ≥ `healthy_threshold` → 恢复健康
+- 全部不健康时降级保护，路由热重载后新上游自动纳入
+**涉及文件**：`src/health_check.rs`（新增）、`src/config.rs`、`src/main.rs`、`src/proxy.rs`、`routes.toml`
+
+### 4.5 ✅ Nacos 集成（配置中心 + 服务发现）
+可插拔设计，`NACOS_ENABLED=false` 时零影响。支持：
+- 从 Nacos 读取路由规则（优先级：环境变量 > Nacos > routes.toml）
+- Nacos 配置热更新（ConfigListener）
+- 服务发现（`service_name` 路由字段 + InstanceListener）
+- 网关自注册
+**涉及文件**：`src/nacos/`（新增 4 文件）、`src/config.rs`、`src/proxy.rs`、`src/main.rs`、`Cargo.toml`、`.env.example`
+
+### 4.6 ✅ main.rs 重构
+提取 `init_tracing()`、`build_cors()`、`build_router()`、`start_server()` 独立函数，`main()` 精简至 ~20 行。
+
+### 4.7 ⬜ 路由匹配优化
+用 Trie 树 / HashMap 预筛选替代线性扫描。
+
+### 4.8 ⬜ per-IP 限流清理
+governor DefaultKeyedStateStore 无清理 API，需评估替代方案。
+
+---
+
+## 五、验证结果
+
+| 验证项 | 结果 |
+|--------|------|
+| `cargo build` | ✅ 编译通过 |
+| `cargo test` | ✅ 33 passed, 0 failed |
+| 手动启动 + Ctrl+C | ✅ 优雅关闭正常 |

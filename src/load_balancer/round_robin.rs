@@ -42,3 +42,40 @@ impl LoadBalancer for RoundRobinBalancer {
         ups.get(index).cloned()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_round_robin_cycling() {
+        let balancer = RoundRobinBalancer::new(vec![
+            "http://a:3000".into(),
+            "http://b:3000".into(),
+            "http://c:3000".into(),
+        ]);
+
+        assert_eq!(balancer.select(None).unwrap(), "http://a:3000");
+        assert_eq!(balancer.select(None).unwrap(), "http://b:3000");
+        assert_eq!(balancer.select(None).unwrap(), "http://c:3000");
+        // 循环回到第一个
+        assert_eq!(balancer.select(None).unwrap(), "http://a:3000");
+    }
+
+    #[test]
+    fn test_empty_upstreams() {
+        let balancer = RoundRobinBalancer::new(vec![]);
+        assert!(balancer.select(None).is_none());
+    }
+
+    #[test]
+    fn test_dynamic_update() {
+        let balancer = RoundRobinBalancer::new(vec!["http://a:3000".into()]);
+        assert_eq!(balancer.select(None).unwrap(), "http://a:3000");
+
+        // 动态更新上游
+        balancer.update_upstreams(vec!["http://x:3000".into(), "http://y:3000".into()]);
+        let result = balancer.select(None).unwrap();
+        assert!(result == "http://x:3000" || result == "http://y:3000");
+    }
+}

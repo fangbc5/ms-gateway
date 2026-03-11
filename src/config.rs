@@ -2,16 +2,25 @@ use config::{Config, ConfigError, File};
 use serde::Deserialize;
 use std::{env, path::PathBuf, time::Duration};
 use crate::path_matcher::RoutePattern;
+use crate::health_check::HealthCheckConfig;
 use std::collections::HashMap;
+use arc_swap::ArcSwap;
+use std::sync::Arc;
+
+/// 共享路由规则：使用 ArcSwap 实现无锁热重载
+pub type SharedRouteRules = Arc<ArcSwap<Vec<RouteRule>>>;
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct RouteRule {
     // 支持单个或多个前缀
-    #[serde(with = "prefix_deserializer")]
+    #[serde(with = "string_or_vec_deser")]
     pub prefix: Vec<String>,
-    // 支持单个或多个上游
-    #[serde(with = "upstream_deserializer")]
+    // 支持单个或多个上游（和 service_name 二选一）
+    #[serde(default, with = "string_or_vec_deser")]
     pub upstream: Vec<String>,
+    // Nacos 服务名（和 upstream 二选一，启用 Nacos 时从注册中心发现实例）
+    #[serde(default)]
+    pub service_name: Option<String>,
     // 负载均衡策略，默认为轮询
     #[serde(default = "default_strategy")]
     pub strategy: String,
@@ -32,29 +41,8 @@ fn default_strategy() -> String {
     "robin".to_string()
 }
 
-// 自定义反序列化器，支持字符串和数组两种格式
-mod prefix_deserializer {
-    use serde::{Deserialize, Deserializer};
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum StringOrVec {
-            String(String),
-            Vec(Vec<String>),
-        }
-
-        match StringOrVec::deserialize(deserializer)? {
-            StringOrVec::String(s) => Ok(vec![s]),
-            StringOrVec::Vec(v) => Ok(v),
-        }
-    }
-}
-
-mod upstream_deserializer {
+// 通用反序列化器：支持字符串和数组两种格式（prefix 和 upstream 共用）
+mod string_or_vec_deser {
     use serde::{Deserialize, Deserializer};
 
     pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
@@ -106,7 +94,50 @@ pub struct Settings {
     pub global_qps: u32,
     pub client_qps: u32,
     pub request_timeout_secs: Option<u64>,
+    /// CORS 允许的源列表（逗号分隔），留空或不配置则允许所有
+    #[serde(default)]
+    pub cors_allowed_origins: Option<String>,
+    /// Nacos 配置（可选，默认不启用）
+    #[serde(default)]
+    pub nacos: Option<NacosSettings>,
 }
+
+/// Nacos 集成配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct NacosSettings {
+    /// 总开关，默认 false
+    #[serde(default)]
+    pub enabled: bool,
+    /// Nacos 服务器地址（逗号分隔多地址）
+    #[serde(default = "default_nacos_addrs")]
+    pub server_addrs: String,
+    /// 命名空间
+    pub namespace: Option<String>,
+    /// 认证用户名
+    pub username: Option<String>,
+    /// 认证密码
+    pub password: Option<String>,
+    /// 服务组名
+    #[serde(default = "default_nacos_group")]
+    pub group: String,
+    /// 是否注册网关自身
+    #[serde(default)]
+    pub register_enabled: bool,
+    /// 注册到 Nacos 的服务名
+    pub service_name: Option<String>,
+    /// 网关主配置的 data_id（从 Nacos 读取 Settings）
+    pub config_data_id: Option<String>,
+    pub config_group: Option<String>,
+    /// 路由规则的 data_id（从 Nacos 读取 routes）
+    pub routes_data_id: Option<String>,
+    pub routes_group: Option<String>,
+    /// 要订阅的服务列表（逗号分隔）
+    #[serde(default)]
+    pub subscribe_services: Vec<String>,
+}
+
+fn default_nacos_addrs() -> String { "127.0.0.1:8848".to_string() }
+fn default_nacos_group() -> String { "DEFAULT_GROUP".to_string() }
 
 impl Settings {
     pub fn request_timeout(&self) -> Duration {
@@ -218,8 +249,9 @@ impl RouteRule {
                 return Err(format!("prefix[{}]不能为空", i));
             }
         }
-        if self.upstream.is_empty() {
-            return Err("upstream不能为空".to_string());
+        // upstream 和 service_name 至少配置一个
+        if self.upstream.is_empty() && self.service_name.is_none() {
+            return Err("upstream 和 service_name 不能同时为空".to_string());
         }
         for (i, u) in self.upstream.iter().enumerate() {
             if u.trim().is_empty() {
@@ -248,9 +280,13 @@ pub fn load_settings() -> Result<Settings, config::ConfigError> {
 }
 
 #[derive(Debug, Deserialize)]
-struct RoutesFile { routes: Vec<RouteRule> }
+struct RoutesFile {
+    routes: Vec<RouteRule>,
+    #[serde(default)]
+    health_check: Option<HealthCheckConfig>,
+}
 
-pub fn load_route_rules() -> Result<Vec<RouteRule>, ConfigError> {
+pub fn load_route_rules() -> Result<(Vec<RouteRule>, HealthCheckConfig), ConfigError> {
     // 可执行文件同级目录
     let exe_dir: PathBuf = env::current_exe()
         .ok()
@@ -280,7 +316,80 @@ pub fn load_route_rules() -> Result<Vec<RouteRule>, ConfigError> {
         rule.compile_patterns();
     }
 
-    Ok(rf.routes)
+    let health_config = rf.health_check.unwrap_or_default();
+    Ok((rf.routes, health_config))
+}
+
+/// 创建共享路由规则（启动时调用）
+pub fn create_shared_route_rules(rules: Vec<RouteRule>) -> SharedRouteRules {
+    Arc::new(ArcSwap::from_pointee(rules))
+}
+
+/// 热重载路由规则：重新读取 routes.toml 并原子替换
+pub fn reload_route_rules(shared: &SharedRouteRules) -> Result<usize, String> {
+    match load_route_rules() {
+        Ok((new_rules, _health_config)) => {
+            let count = new_rules.len();
+            shared.store(Arc::new(new_rules));
+            tracing::info!("🔄 路由热重载成功，加载 {} 条规则", count);
+            Ok(count)
+        }
+        Err(e) => {
+            tracing::error!("路由热重载失败: {}", e);
+            Err(format!("路由重载失败: {}", e))
+        }
+    }
+}
+
+/// 启动 routes.toml 文件监听器，检测到变更时自动重载
+pub fn start_route_watcher(shared: SharedRouteRules) {
+    use notify::{Watcher, RecursiveMode, Event, EventKind, event::ModifyKind};
+    use std::sync::mpsc;
+
+    std::thread::spawn(move || {
+        let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+
+        let mut watcher = match notify::recommended_watcher(tx) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::error!("无法创建文件监听器: {}", e);
+                return;
+            }
+        };
+
+        // 监听当前目录下的 routes.toml
+        let watch_path = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        if let Err(e) = watcher.watch(&watch_path, RecursiveMode::NonRecursive) {
+            tracing::error!("无法监听目录 {:?}: {}", watch_path, e);
+            return;
+        }
+
+        tracing::info!("📂 路由文件监听器已启动，监听: {:?}/routes.toml", watch_path);
+
+        // 防抖：记录上次重载时间
+        let mut last_reload = std::time::Instant::now();
+        let debounce_duration = Duration::from_secs(2);
+
+        for event in rx {
+            match event {
+                Ok(Event { kind: EventKind::Modify(ModifyKind::Data(_)), paths, .. })
+                | Ok(Event { kind: EventKind::Modify(ModifyKind::Any), paths, .. }) => {
+                    let is_routes = paths.iter().any(|p| {
+                        p.file_name()
+                            .map(|f| f.to_string_lossy().contains("routes"))
+                            .unwrap_or(false)
+                    });
+                    if is_routes && last_reload.elapsed() > debounce_duration {
+                        tracing::info!("检测到 routes.toml 变更，触发热重载...");
+                        let _ = reload_route_rules(&shared);
+                        last_reload = std::time::Instant::now();
+                    }
+                }
+                Err(e) => tracing::warn!("文件监听错误: {}", e),
+                _ => {}
+            }
+        }
+    });
 }
 
 #[cfg(test)]
@@ -297,6 +406,7 @@ mod tests {
                 whitelist: None,
                 compiled_prefixes: vec![],
                 compiled_whitelist: vec![],
+                service_name: None,
             },
             RouteRule {
                 prefix: vec!["/api/user/{id}".to_string()],
@@ -305,6 +415,7 @@ mod tests {
                 whitelist: None,
                 compiled_prefixes: vec![],
                 compiled_whitelist: vec![],
+                service_name: None,
             },
         ];
 
@@ -343,6 +454,7 @@ mod tests {
             whitelist: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
+            service_name: None,
         };
         assert!(valid_route.validate().is_ok());
 
@@ -353,6 +465,7 @@ mod tests {
             whitelist: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
+            service_name: None,
         };
         assert!(invalid_prefix.validate().is_err());
 
@@ -363,6 +476,7 @@ mod tests {
             whitelist: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
+            service_name: None,
         };
         assert!(invalid_upstream.validate().is_err());
 
@@ -373,6 +487,7 @@ mod tests {
             whitelist: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
+            service_name: None,
         };
         assert!(invalid_strategy.validate().is_err());
     }

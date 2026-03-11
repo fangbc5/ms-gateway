@@ -66,7 +66,10 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
     tracing::debug!("请求头 Upgrade: {:?}, is_websocket: {}", upgrade_header, is_websocket);
 
     let settings = req.extensions().get::<Settings>().cloned();
-    let route_rules = req.extensions().get::<Vec<crate::config::RouteRule>>().cloned();
+    // 从 SharedRouteRules（ArcSwap）读取最新路由规则（支持热重载）
+    let route_rules = req.extensions()
+        .get::<crate::config::SharedRouteRules>()
+        .map(|shared| shared.load_full());
     // 提取客户端地址（用于 IP Hash 负载均衡）
     let client_addr = req.extensions()
         .get::<axum::extract::ConnectInfo<SocketAddr>>()
@@ -77,15 +80,45 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
     let match_path = full_path.strip_prefix("/proxy").unwrap_or(full_path);
     let query_suffix = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
 
-    // 选择上游
+    // 读取健康状态
+    let health_status = req.extensions()
+        .get::<crate::health_check::SharedHealthStatus>()
+        .cloned();
+
+    // 选择上游（支持 Nacos 服务发现 + 健康过滤 + 负载均衡）
     let selected: Option<(String, String)> = if let Some(rules) = &route_rules {
         if let Some(best_match) = find_best_match(rules, match_path) {
             let path_variables = best_match.extract_variables(match_path);
-            let selected_upstream = get_or_create_balancer(&best_match.upstream, &best_match.strategy)
-                .select(client_addr.as_ref())
-                .unwrap_or_else(|| best_match.upstream[0].clone());
-            let forward_path = reconstruct_forward_path(match_path, &best_match.prefix, &path_variables);
-            Some((selected_upstream, forward_path))
+
+            // 优先从 Nacos 服务发现获取上游，否则使用配置的 upstream
+            let upstreams = if let Some(ref svc_name) = best_match.service_name {
+                let nacos_upstreams = crate::nacos::instances_to_upstreams(svc_name);
+                if nacos_upstreams.is_empty() {
+                    tracing::warn!("Nacos 服务 {} 无可用实例，回退到本地配置", svc_name);
+                    best_match.upstream.clone()
+                } else {
+                    nacos_upstreams
+                }
+            } else {
+                best_match.upstream.clone()
+            };
+
+            if upstreams.is_empty() {
+                None
+            } else {
+                // 过滤不健康的上游
+                let healthy_upstreams = if let Some(ref hs) = health_status {
+                    crate::health_check::filter_healthy_upstreams(&upstreams, hs)
+                } else {
+                    upstreams
+                };
+
+                let selected_upstream = get_or_create_balancer(&healthy_upstreams, &best_match.strategy)
+                    .select(client_addr.as_ref())
+                    .unwrap_or_else(|| healthy_upstreams[0].clone());
+                let forward_path = reconstruct_forward_path(match_path, &best_match.prefix, &path_variables);
+                Some((selected_upstream, forward_path))
+            }
         } else {
             None
         }
@@ -238,8 +271,9 @@ async fn check_whitelist_middleware(mut req: Request<Body>, next: Next) -> Respo
 
     tracing::debug!("白名单检查: 原始路径={}, 匹配路径={}", path, match_path);
 
-    if let Some(rules) = req.extensions().get::<Vec<crate::config::RouteRule>>() {
-        if let Some(rule) = find_best_match(rules, match_path) {
+    if let Some(shared) = req.extensions().get::<crate::config::SharedRouteRules>() {
+        let rules = shared.load();
+        if let Some(rule) = find_best_match(&rules, match_path) {
             tracing::debug!("找到匹配规则: prefix={:?}, whitelist={:?}", rule.prefix, rule.whitelist);
             // 使用预编译的白名单模式匹配（无锁）
             if rule.is_whitelist_hit(match_path) {

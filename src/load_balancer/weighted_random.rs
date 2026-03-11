@@ -14,25 +14,30 @@ pub struct WeightedUpstream {
 /// 内部不可变负载均衡器，支持高效随机选择
 #[derive(Debug)]
 struct WeightedRandomBalancerInner {
+    /// 仅包含 weight > 0 的上游节点（已过滤）
     upstreams: Vec<WeightedUpstream>,
-    prefix_sums: Vec<u32>, // 前缀和
+    prefix_sums: Vec<u32>, // 前缀和，与 upstreams 索引一一对应
     total_weight: u32,
 }
 
 impl WeightedRandomBalancerInner {
     pub fn new(upstreams: Vec<WeightedUpstream>) -> Self {
-        let mut prefix_sums = Vec::with_capacity(upstreams.len());
+        // 过滤掉 weight=0 的节点，确保 upstreams 与 prefix_sums 索引对齐
+        let active_upstreams: Vec<WeightedUpstream> = upstreams
+            .into_iter()
+            .filter(|u| u.weight > 0)
+            .collect();
+
+        let mut prefix_sums = Vec::with_capacity(active_upstreams.len());
         let mut total_weight = 0;
 
-        for u in &upstreams {
-            if u.weight > 0 {  // 过滤掉权重为0的节点
-                total_weight += u.weight;
-                prefix_sums.push(total_weight);
-            }
+        for u in &active_upstreams {
+            total_weight += u.weight;
+            prefix_sums.push(total_weight);
         }
 
         Self {
-            upstreams,
+            upstreams: active_upstreams,
             prefix_sums,
             total_weight,
         }

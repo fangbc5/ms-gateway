@@ -14,3 +14,12 @@ whitelist = ["/ws", "/ws/**", "/wss", "/wss/**"]
 prefix = ["/api/test/**"]
 upstream = "http://host.docker.internal:30001"
 whitelist = ["/api/test/**"]
+
+# 上游健康检查配置
+[health_check]
+enabled = true
+interval_secs = 10
+timeout_secs = 3
+path = "/health"
+unhealthy_threshold = 3
+healthy_threshold = 2

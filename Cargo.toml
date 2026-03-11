@@ -3,6 +3,19 @@ name = "ms-gateway"
 version = "0.1.0"
 edition = "2021"
 
+# 生产构建优化配置
+[profile.release]
+# 启用链接时优化（LTO），生成更小更快的二进制
+lto = true
+# 单 codegen 单元，允许更激进的优化
+codegen-units = 1
+# 剥离调试符号，大幅减小二进制体积
+strip = true
+# panic 时直接中止，减少 unwinding 代码体积
+panic = "abort"
+# 最高优化等级
+opt-level = 3
+
 [dependencies]
 # Web 框架
 axum = "0.7"
@@ -60,3 +73,9 @@ hyper = "1.5"
 hyper-util = { version = "0.1", features = ["tokio"] }
 sha1 = "0.10"
 base64 = "0.22"
+notify = "6"
+uuid = { version = "1.22.0", features = ["v4", "fast-rng"] }
+
+# Nacos 服务注册/发现 + 配置中心
+nacos_rust_client = "0.3"
+toml = "0.8"
