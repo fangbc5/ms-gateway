@@ -1,24 +1,22 @@
+use crate::load_balancer::{LoadBalancer, WeightedUpstream};
+use arc_swap::ArcSwap;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::net::SocketAddr;
-use std::collections::hash_map::DefaultHasher;
-use arc_swap::ArcSwap;
 use std::sync::Arc;
-use crate::load_balancer::LoadBalancer;
 
 /// 负载均衡器状态（不可变对象）
 #[derive(Debug)]
 struct BalancerState {
     hash_ring: BTreeMap<u64, String>,
-    upstreams: Vec<String>,
-    virtual_nodes: usize,
 }
 
 impl BalancerState {
-    fn build(upstreams: Vec<String>, virtual_nodes: usize) -> Self {
+    fn build(upstreams: &[String], virtual_nodes: usize) -> Self {
         let mut hash_ring = BTreeMap::new();
 
-        for upstream in &upstreams {
+        for upstream in upstreams {
             for i in 0..virtual_nodes {
                 let key = format!("{}#{}", upstream, i);
                 let hash = Self::hash(&key);
@@ -26,11 +24,7 @@ impl BalancerState {
             }
         }
 
-        Self {
-            hash_ring,
-            upstreams,
-            virtual_nodes,
-        }
+        Self { hash_ring }
     }
 
     fn hash(key: &str) -> u64 {
@@ -61,7 +55,7 @@ pub struct IpHashBalancer {
 
 impl IpHashBalancer {
     pub fn new(upstreams: Vec<String>) -> Self {
-        let state = BalancerState::build(upstreams, 150); // 每个节点 150 个虚拟节点
+        let state = BalancerState::build(&upstreams, 150); // 每个节点 150 个虚拟节点
         Self {
             state: ArcSwap::from_pointee(state),
         }
@@ -77,41 +71,17 @@ impl IpHashBalancer {
         let hash = BalancerState::hash(&ip_str);
         state.find_upstream(hash)
     }
-
-    /// 更新所有 upstreams
-    pub fn update_upstreams(&self, new_upstreams: Vec<String>) {
-        let new_state = BalancerState::build(new_upstreams, self.state.load().virtual_nodes);
-        self.state.store(Arc::new(new_state));
-    }
-
-    /// 添加一个 upstream
-    pub fn add_upstream(&self, upstream: String) {
-        let mut new_list = self.state.load().upstreams.clone();
-        if !new_list.contains(&upstream) {
-            new_list.push(upstream);
-            self.update_upstreams(new_list);
-        }
-    }
-
-    /// 删除一个 upstream
-    pub fn remove_upstream(&self, upstream: &str) {
-        let new_list: Vec<String> = self.state.load().upstreams
-            .iter()
-            .filter(|u| u.as_str() != upstream)
-            .cloned()
-            .collect();
-        self.update_upstreams(new_list);
-    }
-
-    /// 获取当前 upstreams
-    pub fn get_upstreams(&self) -> Vec<String> {
-        self.state.load().upstreams.clone()
-    }
 }
 
 impl LoadBalancer for IpHashBalancer {
     fn select(&self, client_ip: Option<&SocketAddr>) -> Option<String> {
         self.select(client_ip)
+    }
+
+    fn update_upstreams(&self, new_upstreams: Vec<WeightedUpstream>) {
+        let urls: Vec<String> = new_upstreams.into_iter().map(|u| u.url).collect();
+        let new_state = BalancerState::build(&urls, 150);
+        self.state.store(Arc::new(new_state));
     }
 }
 
@@ -128,13 +98,19 @@ mod tests {
         ]);
 
         // 同一个IP应该总是选择同一个upstream
-        let ip1 = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)), 8080);
+        let ip1 = std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+            8080,
+        );
         let result1 = balancer.select(Some(&ip1));
         let result2 = balancer.select(Some(&ip1));
         assert_eq!(result1, result2);
 
         // 不同IP可能选择不同的upstream
-        let ip2 = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 2)), 8080);
+        let ip2 = std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 2)),
+            8080,
+        );
         let result3 = balancer.select(Some(&ip2));
         // 结果可能相同也可能不同，但不应该panic
         assert!(result3.is_some());
@@ -142,20 +118,33 @@ mod tests {
 
     #[test]
     fn test_dynamic_update() {
-        let balancer = IpHashBalancer::new(vec![
-            "http://localhost:30000".to_string(),
-        ]);
+        let balancer = IpHashBalancer::new(vec!["http://localhost:30000".to_string()]);
 
-        let ip = std::net::SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)), 8080);
-        let _original = balancer.select(Some(&ip));
+        let ip = std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)),
+            8080,
+        );
+        let original = balancer.select(Some(&ip));
+        assert_eq!(original, Some("http://localhost:30000".to_string()));
 
+        // 通过 update_upstreams 原地更新（模拟 Nacos/配置变更）
         balancer.update_upstreams(vec![
-            "http://localhost:30001".to_string(),
-            "http://localhost:30002".to_string(),
+            WeightedUpstream { url: "http://localhost:30001".to_string(), weight: 1 },
+            WeightedUpstream { url: "http://localhost:30002".to_string(), weight: 1 },
         ]);
 
         let updated = balancer.select(Some(&ip));
-        // 更新后应该仍然能选择到upstream
         assert!(updated.is_some());
+        // 更新后不再选到旧节点
+        assert_ne!(updated, Some("http://localhost:30000".to_string()));
     }
-} 
+
+    #[test]
+    fn test_update_to_empty() {
+        let balancer = IpHashBalancer::new(vec!["http://localhost:30000".to_string()]);
+        assert!(balancer.select(None).is_some());
+
+        balancer.update_upstreams(vec![] as Vec<WeightedUpstream>);
+        assert!(balancer.select(None).is_none());
+    }
+}

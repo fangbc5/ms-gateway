@@ -1,5 +1,13 @@
-# ===== 构建阶段 =====
-FROM rust:1.85-slim as builder
+# ===== 构建阶段（Alpine 原生 musl，兼容 arm64/amd64） =====
+FROM rust:1.85-alpine AS builder
+
+# 安装构建依赖（vendored openssl 需要 perl、make、gcc）
+RUN apk add --no-cache \
+    pkgconf \
+    perl \
+    make \
+    musl-dev \
+    gcc
 
 # 配置 Cargo 使用国内镜像源（加速构建）
 RUN mkdir -p /usr/local/cargo && \
@@ -7,12 +15,6 @@ RUN mkdir -p /usr/local/cargo && \
     echo 'replace-with = "ustc"' >> /usr/local/cargo/config.toml && \
     echo '[source.ustc]' >> /usr/local/cargo/config.toml && \
     echo 'registry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"' >> /usr/local/cargo/config.toml
-
-# 安装必要的构建依赖
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
 
 # 设置工作目录
 WORKDIR /app
@@ -26,17 +28,21 @@ RUN mkdir src && \
     cargo build --release && \
     rm -rf src target/release/deps/ms_gateway*
 
-# 复制实际源代码
+# 复制实际源代码和静态资源（include_str! 编译时需要）
 COPY src ./src
+COPY static ./static
 
 # 构建真正的应用
 RUN cargo build --release --bin ms-gateway
 
-# ===== 运行阶段 =====
-FROM gcr.io/distroless/cc-debian12
+# ===== 运行阶段（scratch = 0 字节基础镜像） =====
+FROM scratch
 
-# 从构建阶段复制二进制文件
+# 从构建阶段复制全静态链接的二进制文件
 COPY --from=builder /app/target/release/ms-gateway /usr/local/bin/ms-gateway
+
+# 复制 SSL 根证书（HTTPS 请求需要）
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 
 # 复制配置文件
 COPY routes.toml /app/routes.toml
@@ -50,6 +56,7 @@ EXPOSE 8080
 # 设置环境变量
 ENV RUST_LOG=info
 ENV GATEWAY_BIND=0.0.0.0:8080
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 # 运行应用
 ENTRYPOINT ["/usr/local/bin/ms-gateway"]

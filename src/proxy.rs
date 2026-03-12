@@ -90,30 +90,40 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
         if let Some(best_match) = find_best_match(rules, match_path) {
             let path_variables = best_match.extract_variables(match_path);
 
-            // 从 Nacos 服务发现获取上游，或使用路由规则中的 upstream（两套体系独立互不回退）
-            let upstreams = if let Some(ref svc_name) = best_match.service_name {
-                let nacos_upstreams = crate::nacos::instances_to_upstreams(svc_name);
-                if nacos_upstreams.is_empty() {
+            // 从 Nacos 服务发现获取上游（带权重），或使用路由规则中的 upstream（默认权重1）
+            let weighted_upstreams: Vec<WeightedUpstream> = if let Some(ref svc_name) = best_match.service_name {
+                let nacos_ups = crate::nacos::instances_to_weighted_upstreams(svc_name);
+                if nacos_ups.is_empty() {
                     tracing::warn!("⚠️ 服务 {} 无可用实例，请检查 Nacos 注册状态", svc_name);
                 }
-                nacos_upstreams
+                nacos_ups
             } else {
-                best_match.upstream.clone()
+                best_match.upstream.iter().map(|u| WeightedUpstream {
+                    url: u.clone(),
+                    weight: 1,
+                }).collect()
             };
 
-            if upstreams.is_empty() {
+            if weighted_upstreams.is_empty() {
                 None
             } else {
                 // 过滤不健康的上游
                 let healthy_upstreams = if let Some(ref hs) = health_status {
-                    crate::health_check::filter_healthy_upstreams(&upstreams, hs)
+                    let healthy_urls: Vec<String> = crate::health_check::filter_healthy_upstreams(
+                        &weighted_upstreams.iter().map(|u| u.url.clone()).collect::<Vec<_>>(),
+                        hs,
+                    );
+                    // 保留在健康列表中的 WeightedUpstream
+                    weighted_upstreams.into_iter()
+                        .filter(|u| healthy_urls.contains(&u.url))
+                        .collect::<Vec<_>>()
                 } else {
-                    upstreams
+                    weighted_upstreams
                 };
 
-                let selected_upstream = get_or_create_balancer(&healthy_upstreams, &best_match.strategy)
+                let selected_upstream = get_or_create_balancer(&best_match.prefix, &healthy_upstreams, &best_match.strategy)
                     .select(client_addr.as_ref())
-                    .unwrap_or_else(|| healthy_upstreams[0].clone());
+                    .unwrap_or_else(|| healthy_upstreams[0].url.clone());
                 let forward_path = reconstruct_forward_path(match_path, &best_match.prefix, &path_variables);
                 Some((selected_upstream, forward_path))
             }
@@ -205,24 +215,28 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
     }
 }
 
-// ===== 获取或创建负载均衡器 =====
-fn get_or_create_balancer(upstreams: &[String], strategy: &str) -> Arc<dyn LoadBalancer + Send + Sync> {
-    let key = format!("{}:{}", strategy, upstreams.join(","));
-    BALANCERS
-        .entry(key.clone())
+// ===== 获取或创建负载均衡器（路由粒度复用，上游变化时原地更新） =====
+fn get_or_create_balancer(
+    route_prefix: &[String],
+    upstreams: &[WeightedUpstream],
+    strategy: &str,
+) -> Arc<dyn LoadBalancer + Send + Sync> {
+    // 用路由前缀 + 策略名称作为稳定的 key，而不是 upstreams
+    let key = format!("{}:{}", strategy, route_prefix.join(","));
+    let urls: Vec<String> = upstreams.iter().map(|u| u.url.clone()).collect();
+    let balancer = BALANCERS
+        .entry(key)
         .or_insert_with(|| {
             match strategy {
-                "random" => Arc::new(WeightedRandomBalancer::new(
-                    upstreams.iter().map(|u| WeightedUpstream {
-                        url: u.clone(),
-                        weight: 1,
-                    }).collect()
-                )),
-                "iphash" => Arc::new(IpHashBalancer::new(upstreams.to_vec())),
-                _ => Arc::new(RoundRobinBalancer::new(upstreams.to_vec())), // 默认轮询
+                "random" => Arc::new(WeightedRandomBalancer::new(upstreams.to_vec())),
+                "iphash" => Arc::new(IpHashBalancer::new(urls.clone())),
+                _ => Arc::new(RoundRobinBalancer::new(urls.clone())), // 默认轮询
             }
-        })
-        .clone()
+        });
+
+    // 每次都更新上游列表（带权重），以便 Nacos/配置文件变更后即时生效
+    balancer.update_upstreams(upstreams.to_vec());
+    balancer.clone()
 }
 
 // ===== 查找最佳匹配规则（预编译正则可选） =====

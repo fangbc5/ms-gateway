@@ -22,14 +22,17 @@ fn update_service_instances(service_name: &str, instances: Vec<Arc<Instance>>) {
     SERVICE_INSTANCES.insert(service_name.to_string(), instances);
 }
 
-/// 将 Nacos 服务实例转换为 upstream URL 列表
-pub fn instances_to_upstreams(service_name: &str) -> Vec<String> {
+/// 将 Nacos 服务实例转换为带权重的 upstream 列表（保留 Nacos 权重）
+pub fn instances_to_weighted_upstreams(service_name: &str) -> Vec<crate::load_balancer::WeightedUpstream> {
     get_service_instances(service_name)
         .map(|instances| {
             instances
                 .iter()
                 .filter(|i| i.healthy)
-                .map(|i| format!("http://{}:{}", i.ip, i.port))
+                .map(|i| crate::load_balancer::WeightedUpstream {
+                    url: format!("http://{}:{}", i.ip, i.port),
+                    weight: i.weight.round().max(1.0) as u32, // Nacos weight f32 → u32，最小为 1
+                })
                 .collect()
         })
         .unwrap_or_default()

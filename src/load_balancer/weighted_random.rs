@@ -1,15 +1,8 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 use rand::Rng;
 use arc_swap::ArcSwap;
-use std::sync::Arc;
-use crate::load_balancer::LoadBalancer;
-
-/// 单个上游节点及权重
-#[derive(Debug, Clone)]
-pub struct WeightedUpstream {
-    pub url: String,
-    pub weight: u32,
-}
+use crate::load_balancer::{LoadBalancer, WeightedUpstream};
 
 /// 内部不可变负载均衡器，支持高效随机选择
 #[derive(Debug)]
@@ -77,18 +70,16 @@ impl WeightedRandomBalancer {
     pub fn select_inner(&self) -> Option<String> {
         self.inner.load().select()
     }
-
-    /// 更新上游节点列表，线程安全
-    #[allow(dead_code)]
-    pub fn update(&self, new_upstreams: Vec<WeightedUpstream>) {
-        let new_inner = WeightedRandomBalancerInner::new(new_upstreams);
-        self.inner.store(Arc::new(new_inner));
-    }
 }
 
 impl LoadBalancer for WeightedRandomBalancer {
     fn select(&self, _client_ip: Option<&SocketAddr>) -> Option<String> {
         self.select_inner()
+    }
+
+    fn update_upstreams(&self, new_upstreams: Vec<WeightedUpstream>) {
+        let new_inner = WeightedRandomBalancerInner::new(new_upstreams);
+        self.inner.store(Arc::new(new_inner));
     }
 }
 
@@ -121,18 +112,28 @@ mod tests {
         let balancer = WeightedRandomBalancer::new(vec![
             WeightedUpstream { url: "http://localhost:30000".to_string(), weight: 1 },
         ]);
-
         assert_eq!(balancer.select(None).unwrap(), "http://localhost:30000");
 
-        balancer.update(vec![
+        // 原地更新上游节点
+        balancer.update_upstreams(vec![
             WeightedUpstream { url: "http://localhost:30001".to_string(), weight: 1 },
-            WeightedUpstream { url: "http://localhost:30002".to_string(), weight: 2 },
+            WeightedUpstream { url: "http://localhost:30002".to_string(), weight: 1 },
         ]);
 
-        let mut urls = vec![];
-        for _ in 0..10 {
-            urls.push(balancer.select(None).unwrap());
-        }
-        assert!(urls.iter().any(|u| u == "http://localhost:30002"));
+        // 更新后应选到新节点
+        let selected = balancer.select(None).unwrap();
+        assert!(selected == "http://localhost:30001" || selected == "http://localhost:30002");
+    }
+
+    #[test]
+    fn test_update_to_empty() {
+        let balancer = WeightedRandomBalancer::new(vec![
+            WeightedUpstream { url: "http://localhost:30000".to_string(), weight: 1 },
+        ]);
+        assert!(balancer.select(None).is_some());
+
+        balancer.update_upstreams(vec![] as Vec<WeightedUpstream>);
+        assert!(balancer.select(None).is_none());
     }
 }
+

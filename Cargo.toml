@@ -74,6 +74,9 @@ hyper-util = { version = "0.1", features = ["tokio"] }
 sha1 = "0.10"
 base64 = "0.22"
 notify = "6"
+
+# 静态编译 OpenSSL（musl 全静态链接需要）
+openssl = { version = "0.10", features = ["vendored"] }
 uuid = { version = "1.22.0", features = ["v4", "fast-rng"] }
 
 # Nacos 服务注册/发现 + 配置中心
