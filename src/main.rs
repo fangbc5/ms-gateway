@@ -23,20 +23,29 @@ async fn main() -> anyhow::Result<()> {
 
     let settings = config::load_settings()?;
 
-    // 路由规则 + 健康检查
-    let (route_rules, health_config) = config::load_route_rules().unwrap_or_else(|e| {
-        tracing::warn!("加载路由规则失败: {}，使用默认配置", e);
-        (Vec::new(), health_check::HealthCheckConfig::default())
-    });
-    let shared_rules = config::create_shared_route_rules(route_rules);
+    // 先创建空的共享路由规则容器
+    let shared_rules = config::create_shared_route_rules(Vec::new());
 
-    // Nacos 集成（配置开关控制）
-    nacos::init_if_enabled(&settings, &shared_rules).await;
+    // Nacos 优先：如果 Nacos 成功加载了路由配置，跳过文件配置
+    let nacos_active = nacos::init_if_enabled(&settings, &shared_rules).await;
+
+    // 仅当 Nacos 未激活时，才加载本地 routes.toml 和启动文件监听
+    let health_config = if nacos_active {
+        tracing::info!("📡 路由由 Nacos 配置中心管理，跳过本地 routes.toml");
+        health_check::HealthCheckConfig::default()
+    } else {
+        let (route_rules, hc) = config::load_route_rules().unwrap_or_else(|e| {
+            tracing::warn!("加载路由规则失败: {}，使用默认配置", e);
+            (Vec::new(), health_check::HealthCheckConfig::default())
+        });
+        shared_rules.store(std::sync::Arc::new(route_rules));
+        config::start_route_watcher(shared_rules.clone());
+        hc
+    };
 
     // 后台服务
     let health_status = health_check::create_health_status();
     health_check::start_health_checker(health_config, shared_rules.clone(), health_status.clone());
-    config::start_route_watcher(shared_rules.clone());
 
     // 构建并启动服务
     let app = build_router(&settings, shared_rules, health_status);

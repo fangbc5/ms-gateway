@@ -37,19 +37,22 @@ pub fn instances_to_upstreams(service_name: &str) -> Vec<String> {
 
 
 /// 条件初始化 Nacos（配置开关控制）
-pub async fn init_if_enabled(settings: &Settings, shared_rules: &SharedRouteRules) {
+///
+/// 返回 `true` 表示 Nacos 路由配置已成功加载（无需加载本地文件），
+/// 返回 `false` 表示 Nacos 未启用或初始化失败（应 fallback 到文件配置）。
+pub async fn init_if_enabled(settings: &Settings, shared_rules: &SharedRouteRules) -> bool {
     let nacos_settings = match &settings.nacos {
         Some(ns) if ns.enabled => ns,
         _ => {
             tracing::info!("Nacos 未启用，使用本地配置");
-            return;
+            return false;
         }
     };
 
     // 1. 初始化客户端
     if let Err(e) = client::init_nacos(nacos_settings).await {
         tracing::error!("Nacos 客户端初始化失败: {}，回退到本地配置", e);
-        return;
+        return false;
     }
 
     // 2. 从 Nacos 拉取路由配置并订阅变更（合并为一步，避免重复加载）
@@ -64,4 +67,13 @@ pub async fn init_if_enabled(settings: &Settings, shared_rules: &SharedRouteRule
             .unwrap_or_else(|| "ms-gateway".to_string());
         discovery::subscribe_one_service(&self_name, &nacos_settings.naming_group).await;
     }
+
+    // 判断 Nacos 路由是否已经成功加载
+    let active = crate::config::is_nacos_routes_active();
+    if active {
+        tracing::info!("✅ Nacos 路由配置已激活，跳过本地 routes.toml 加载和监听");
+    } else {
+        tracing::warn!("⚠ Nacos 已连接但未加载路由配置（routes_data_id 未配置或配置为空），回退到本地配置");
+    }
+    active
 }
