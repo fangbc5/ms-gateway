@@ -30,6 +30,7 @@ logs/
 
 # Docker
 .env
+.env.docker
 !.env.example
 
 # Runtime
