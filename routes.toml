@@ -1,21 +1,32 @@
-# 多前缀匹配，多上游轮询
+# ========== 认证服务 ==========
 [[routes]]
-prefix = ["/auth/**", "/token/**", "/user/**"]
-upstream = "http://host.docker.internal:30000"
-whitelist = ["/auth/login","/auth/code/send","/auth/code/verify","/auth/register"]
+prefix = ["/api/v1/auth/**"]
+service_name = "ms-auth"
+whitelist = ["/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/send-code", "/api/v1/auth/captcha", "/api/v1/auth/refresh-token"]
+
+# ========== 身份管理服务 ==========
+[[routes]]
+prefix = ["/api/v1/identity/**"]
+service_name = "ms-identity"
+
+# ========== 对象存储服务 ==========
+[[routes]]
+prefix = ["/api/v1/oss/**"]
+service_name = "ms-oss"
+
+# ========== WebSocket 服务 ==========
 [[routes]]
 prefix = ["/ws", "/ws/**", "/wss", "/wss/**"]
-upstream = ["http://host.docker.internal:30001"]
-# 开放 WebSocket 路径的鉴权（示例：全部放行）
+service_name = "ms-websocket"
 whitelist = ["/ws", "/ws/**", "/wss", "/wss/**"]
 
-# ms-websocket 测试接口（推送消息、查询在线用户）
+# ms-websocket 测试接口
 [[routes]]
 prefix = ["/api/test/**"]
-upstream = "http://host.docker.internal:30001"
+service_name = "ms-websocket"
 whitelist = ["/api/test/**"]
 
-# 上游健康检查配置
+# ========== 健康检查 ==========
 [health_check]
 enabled = true
 interval_secs = 10
