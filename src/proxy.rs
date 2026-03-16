@@ -17,6 +17,7 @@ use once_cell::sync::Lazy;
 use crate::load_balancer::{RoundRobinBalancer, WeightedRandomBalancer, IpHashBalancer, LoadBalancer, WeightedUpstream};
 use axum::middleware::Next;
 use axum::http::HeaderValue;
+use std::time::Instant;
 
 // ===== 全局客户端 =====
 /// 全局 HTTP 客户端（高并发优化）
@@ -54,6 +55,42 @@ pub fn router() -> Router {
         .layer(axum::middleware::from_fn(rate_limit_layer))
 }
 
+// ===== W3C Trace Context 工具函数 =====
+
+/// 从 traceparent header 解析 trace_id
+fn parse_trace_id(traceparent: &str) -> Option<String> {
+    let parts: Vec<&str> = traceparent.split('-').collect();
+    if parts.len() >= 3 && parts[1].len() == 32 {
+        Some(parts[1].to_string())
+    } else {
+        None
+    }
+}
+
+/// 生成 trace_id（32位 hex）
+fn generate_trace_id() -> String {
+    uuid::Uuid::new_v4().as_simple().to_string()
+}
+
+/// 生成 span_id（16位 hex）
+fn generate_span_id() -> String {
+    uuid::Uuid::new_v4().as_simple().to_string()[..16].to_string()
+}
+
+/// 多级慢请求告警标签
+fn slow_request_level(duration_ms: u128) -> Option<&'static str> {
+    match duration_ms {
+        10_000.. => Some("\u{1f534} CRITICAL >10s"),
+        5_000..=9_999 => Some("\u{1f534} VERY_SLOW >5s"),
+        3_000..=4_999 => Some("\u{1f7e0} SLOW >3s"),
+        2_000..=2_999 => Some("\u{1f7e0} SLOW >2s"),
+        1_000..=1_999 => Some("\u{1f7e1} SLOW >1s"),
+        500..=999 => Some("\u{1f7e1} SLOW >500ms"),
+        200..=499 => Some("\u{1f7e2} SLOW >200ms"),
+        _ => None,
+    }
+}
+
 // ===== 代理处理器 =====
 async fn proxy_handler(req: Request<Body>) -> Response<Body> {
     // 检测 WebSocket 升级请求
@@ -77,8 +114,18 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
 
     // 去掉 /proxy 前缀
     let full_path = req.uri().path();
-    let match_path = full_path.strip_prefix("/proxy").unwrap_or(full_path);
+    let match_path = full_path.strip_prefix("/proxy").unwrap_or(full_path).to_string();
     let query_suffix = req.uri().query().map(|q| format!("?{}", q)).unwrap_or_default();
+    let req_method = req.method().clone();
+
+    // 提取或生成 trace context（从入站 traceparent header）
+    let trace_id = req.headers().get("traceparent")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_trace_id)
+        .unwrap_or_else(generate_trace_id);
+    let span_id = generate_span_id();
+    let traceparent = format!("00-{}-{}-01", trace_id, span_id);
+    let trace_short = trace_id[..8.min(trace_id.len())].to_string();
 
     // 读取健康状态
     let health_status = req.extensions()
@@ -87,8 +134,8 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
 
     // 选择上游（支持 Nacos 服务发现 + 健康过滤 + 负载均衡）
     let selected: Option<(String, String)> = if let Some(rules) = &route_rules {
-        if let Some(best_match) = find_best_match(rules, match_path) {
-            let path_variables = best_match.extract_variables(match_path);
+        if let Some(best_match) = find_best_match(rules, &match_path) {
+            let path_variables = best_match.extract_variables(&match_path);
 
             // 从 Nacos 服务发现获取上游（带权重），或使用路由规则中的 upstream（默认权重1）
             let weighted_upstreams: Vec<WeightedUpstream> = if let Some(ref svc_name) = best_match.service_name {
@@ -124,7 +171,7 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
                 let selected_upstream = get_or_create_balancer(&best_match.prefix, &healthy_upstreams, &best_match.strategy)
                     .select(client_addr.as_ref())
                     .unwrap_or_else(|| healthy_upstreams[0].url.clone());
-                let forward_path = reconstruct_forward_path(match_path, &best_match.prefix, &path_variables);
+                let forward_path = reconstruct_forward_path(&match_path, &best_match.prefix, &path_variables);
                 Some((selected_upstream, forward_path))
             }
         } else {
@@ -137,15 +184,20 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
     let (upstream, forward_path) = match selected {
         Some(v) => v,
         None => {
-            return Response::builder()
+             return Response::builder()
                 .status(502)
                 .header(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")
+                .header("traceparent", &traceparent)
+                .header("x-trace-id", &trace_short)
                 .body(Body::from(format!("{{\"error\":\"No upstream configured for path: {}\"}}", match_path)))
                 .unwrap();
         }
     };
 
-    info!("路径匹配: {} -> {} (转发到: {})", match_path, forward_path, upstream);
+    info!("→ {} {} -> {} [trace={}]", req_method, match_path, upstream, trace_short);
+
+    // WebSocket/gRPC 分支日志时间记录
+    let start = Instant::now();
 
     // 如果是 WebSocket 请求，走 WebSocket 代理逻辑
     if is_websocket {
@@ -164,16 +216,19 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
         return crate::websocket::handle_websocket(req, ws_url).await;
     }
 
-    // 构建 reqwest 请求
     let mut rb = HTTP_CLIENT
-        .request(req.method().clone(), format!("{}{}{}", upstream, forward_path, query_suffix));
+        .request(req_method.clone(), format!("{}{}{}", upstream, forward_path, query_suffix));
 
     // 设置超时
     if let Some(s) = &settings {
         rb = rb.timeout(s.request_timeout());
     }
 
-    // 复制 headers
+    // 注入 traceparent 和 x-request-id（分布式链路追踪）
+    rb = rb.header("traceparent", &traceparent);
+    rb = rb.header("x-request-id", &trace_id);
+
+    // 复制 headers（跳过 host 和已注入的 trace headers）
     for (name, value) in req.headers().iter() {
         if name == &axum::http::header::HOST { continue; }
         rb = rb.header(name, value);
@@ -190,6 +245,21 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
         Ok(resp) => {
             let status = resp.status();
             let headers = resp.headers().clone();
+            let duration_ms = start.elapsed().as_millis();
+
+            // 记录响应日志
+            if status.is_server_error() {
+                tracing::error!("← {} {} {} {}ms [trace={}]", status.as_u16(), req_method, match_path, duration_ms, trace_short);
+            } else if status.is_client_error() {
+                tracing::warn!("← {} {} {} {}ms [trace={}]", status.as_u16(), req_method, match_path, duration_ms, trace_short);
+            } else {
+                tracing::info!("← {} {} {} {}ms [trace={}]", status.as_u16(), req_method, match_path, duration_ms, trace_short);
+            }
+
+            // 多级慢请求告警
+            if let Some(level) = slow_request_level(duration_ms) {
+                tracing::warn!("{} {}ms {} {} [trace={}]", level, duration_ms, req_method, match_path, trace_short);
+            }
 
             let mut builder = Response::builder().status(status);
 
@@ -197,6 +267,10 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
             for (name, value) in headers.iter() {
                 builder = builder.header(name, value);
             }
+
+            // 注入 trace headers 到响应
+            builder = builder.header("traceparent", &traceparent);
+            builder = builder.header("x-trace-id", &trace_short);
 
             // 兜底 Content-Type
             if !builder.headers_ref().map(|h| h.contains_key(axum::http::header::CONTENT_TYPE)).unwrap_or(false) {
@@ -207,11 +281,17 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
             let body_stream = resp.bytes_stream();
             builder.body(Body::from_stream(body_stream)).unwrap()
         }
-        Err(err) => Response::builder()
-            .status(500)
-            .header(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")
-            .body(Body::from(format!("{{\"error\":\"Proxy error: {}\"}}", err)))
-            .unwrap(),
+        Err(err) => {
+            let duration_ms = start.elapsed().as_millis();
+            tracing::error!("← 502 {} {} {}ms [trace={}] error={}", req_method, match_path, duration_ms, trace_short, err);
+            Response::builder()
+                .status(502)
+                .header(axum::http::header::CONTENT_TYPE, "application/json; charset=utf-8")
+                .header("traceparent", &traceparent)
+                .header("x-trace-id", &trace_short)
+                .body(Body::from(format!("{{\"error\":\"Proxy error: {}\"}}", err)))
+                .unwrap()
+        }
     }
 }
 
