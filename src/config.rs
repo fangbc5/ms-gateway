@@ -110,8 +110,8 @@ mod opt_vec_string_deser {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Settings {
-    pub gateway_bind: String,
-    pub jwt_decoding_key: String,
+    pub server: ServerSettings,
+    pub jwt_secret: String,
     pub global_qps: u32,
     pub client_qps: u32,
     pub request_timeout_secs: Option<u64>,
@@ -121,6 +121,32 @@ pub struct Settings {
     /// Nacos 配置（可选，默认不启用）
     #[serde(default)]
     pub nacos: Option<NacosSettings>,
+}
+
+/// 服务器配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct ServerSettings {
+    /// 监听地址，如 0.0.0.0
+    #[serde(default = "default_server_addr")]
+    pub addr: String,
+    /// 监听端口
+    #[serde(default = "default_server_port")]
+    pub port: u16,
+}
+
+fn default_server_addr() -> String {
+    "0.0.0.0".to_string()
+}
+
+fn default_server_port() -> u16 {
+    8080
+}
+
+impl ServerSettings {
+    /// 返回 "addr:port" 格式的绑定地址
+    pub fn bind_addr(&self) -> String {
+        format!("{}:{}", self.addr, self.port)
+    }
 }
 
 /// Nacos 集成配置
@@ -304,8 +330,9 @@ pub fn load_settings() -> Result<Settings, config::ConfigError> {
     let builder = Config::builder()
         .add_source(File::with_name("config").required(false))
         .add_source(
-            config::Environment::default()
-                .separator("__")  // 支持嵌套结构: NACOS__ENABLED -> nacos.enabled
+            config::Environment::with_prefix("APP")
+                .prefix_separator("__")
+                .separator("__")  // 支持嵌套结构: APP__NACOS__ENABLED -> nacos.enabled
         );
 
     let cfg = builder.build()?;

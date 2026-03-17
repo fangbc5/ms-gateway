@@ -85,8 +85,13 @@ pub async fn register_self(nacos_config: &NacosSettings, settings: &Settings) {
     let service_name = nacos_config.service_name.clone()
         .unwrap_or_else(|| "ms-gateway".to_string());
 
-    // 解析绑定地址
-    let (ip, port) = parse_bind_addr(&settings.gateway_bind);
+    // 从配置中读取地址和端口
+    let ip = if settings.server.addr == "0.0.0.0" {
+        local_ip().unwrap_or_else(|| "127.0.0.1".to_string())
+    } else {
+        settings.server.addr.clone()
+    };
+    let port = settings.server.port as u32;
 
     let instance = Instance::new_simple(
         &ip, port, &service_name, &nacos_config.naming_group,
@@ -94,23 +99,6 @@ pub async fn register_self(nacos_config: &NacosSettings, settings: &Settings) {
 
     naming_client.register(instance);
     tracing::info!("✅ 网关已注册到 Nacos: {}:{} (服务名: {})", ip, port, service_name);
-}
-
-/// 解析绑定地址为 (ip, port)
-fn parse_bind_addr(bind: &str) -> (String, u32) {
-    if let Some(idx) = bind.rfind(':') {
-        let ip = bind[..idx].to_string();
-        let port = bind[idx + 1..].parse().unwrap_or(8080);
-        // 如果是 0.0.0.0 则尝试获取本机 IP
-        let ip = if ip == "0.0.0.0" {
-            local_ip().unwrap_or_else(|| "127.0.0.1".to_string())
-        } else {
-            ip
-        };
-        (ip, port)
-    } else {
-        ("127.0.0.1".to_string(), 8080)
-    }
 }
 
 /// 获取本机 IP

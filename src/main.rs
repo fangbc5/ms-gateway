@@ -1,21 +1,24 @@
-use axum::{Router, routing::get, routing::post, Extension, response::Json, extract::Request, middleware::Next, response::IntoResponse};
-use tokio::net::TcpListener;
-use tracing_subscriber::EnvFilter;
+use axum::{
+    extract::Request, middleware::Next, response::IntoResponse, response::Json, routing::get,
+    routing::post, Extension, Router,
+};
+use serde_json::json;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tower_http::cors::{CorsLayer, Any};
-use serde_json::json;
+use tokio::net::TcpListener;
+use tower_http::cors::{Any, CorsLayer};
+use tracing_subscriber::EnvFilter;
 
-mod proxy;
 mod auth;
 mod config;
-mod metrics;
-mod rate_limit;
-mod path_matcher;
-mod load_balancer;
-mod websocket;
 mod health_check;
+mod load_balancer;
+mod metrics;
 mod nacos;
+mod path_matcher;
+mod proxy;
+mod rate_limit;
+mod websocket;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -49,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
 
     // 构建并启动服务
     let app = build_router(&settings, shared_rules, health_status);
-    start_server(app, &settings.gateway_bind).await
+    start_server(app, &settings.server.bind_addr()).await
 }
 
 /// 构建 axum Router（路由 + 中间件 + 扩展注入）
@@ -58,9 +61,9 @@ fn build_router(
     shared_rules: config::SharedRouteRules,
     health_status: health_check::SharedHealthStatus,
 ) -> Router {
-    let decoding_key = Arc::new(
-        jsonwebtoken::DecodingKey::from_secret(settings.jwt_decoding_key.as_bytes())
-    );
+    let decoding_key = Arc::new(jsonwebtoken::DecodingKey::from_secret(
+        settings.jwt_secret.as_bytes(),
+    ));
     let rate_limits = rate_limit::init_rate_limits(settings);
 
     Router::new()
@@ -93,10 +96,13 @@ async fn start_server(app: Router, bind_addr: &str) -> anyhow::Result<()> {
 
 /// 初始化日志
 fn init_tracing() {
+    // 优先读 APP__LOG_LEVEL（与微服务统一），兼容 RUST_LOG
+    let filter = std::env::var("APP__LOG_LEVEL")
+        .or_else(|_| std::env::var("RUST_LOG"))
+        .unwrap_or_else(|_| "info".to_string());
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
-        )
+        .with_env_filter(EnvFilter::new(&filter))
         .init();
 }
 

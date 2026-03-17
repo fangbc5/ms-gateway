@@ -11,9 +11,16 @@ use thiserror::Error;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,       // 用户 ID
-    pub exp: usize,        // 过期时间（秒）
-    pub tenant_id: String, // 多租户 ID
+    pub sub: String,           // 用户 ID
+    pub exp: usize,            // 过期时间（秒）
+    #[serde(default)]
+    pub tenant_id: String,     // 多租户 ID
+    #[serde(default)]
+    pub username: String,      // 用户名
+    #[serde(default)]
+    pub token_type: String,    // token 类型
+    #[serde(default)]
+    pub iat: i64,              // 签发时间
 }
 
 #[derive(Debug, Error)]
@@ -54,7 +61,7 @@ where
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         // 白名单标记则跳过鉴权，返回空 Claims
         if parts.extensions.get::<crate::proxy::WhitelistBypass>().is_some() {
-            return Ok(JwtAuth(Claims { sub: String::new(), exp: 0, tenant_id: String::new() }));
+            return Ok(JwtAuth(Claims { sub: String::new(), exp: 0, tenant_id: String::new(), username: String::new(), token_type: String::new(), iat: 0 }));
         }
 
         // 使用预构造的 DecodingKey（启动时注入，避免每次请求重复构建）

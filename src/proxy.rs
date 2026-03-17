@@ -382,24 +382,34 @@ async fn check_whitelist_middleware(mut req: Request<Body>, next: Next) -> Respo
     next.run(req).await
 }
 
-// ===== 透传租户和用户id信息中间件 =====
+// ===== 透传租户和用户信息中间件 =====
 async fn propagate_auth_headers(mut req: Request<Body>, next: Next) -> Response<Body> {
-    // 先提取 JWT 信息，避免借用冲突
-    let (uid, tenant_id) = if let Some(jwt) = req.extensions().get::<crate::auth::JwtAuth>() {
-        (jwt.0.sub.clone(), jwt.0.tenant_id.clone())
+    // 先剥离外部可能伪造的 X-User-* headers（安全防护）
+    req.headers_mut().remove("X-User-Id");
+    req.headers_mut().remove("X-Tenant-Id");
+    req.headers_mut().remove("X-Username");
+
+    // 从 JWT Claims 中提取用户信息
+    let (uid, tenant_id, username) = if let Some(jwt) = req.extensions().get::<crate::auth::JwtAuth>() {
+        (jwt.0.sub.clone(), jwt.0.tenant_id.clone(), jwt.0.username.clone())
     } else {
-        (String::new(), String::new())
+        (String::new(), String::new(), String::new())
     };
     
-    // 然后修改 headers
+    // 注入网关验证过的用户信息 headers
     if !uid.is_empty() {
         if let Ok(v) = HeaderValue::from_str(&uid) {
-            req.headers_mut().insert("uid", v);
+            req.headers_mut().insert("X-User-Id", v);
         }
     }
     if !tenant_id.is_empty() {
         if let Ok(v) = HeaderValue::from_str(&tenant_id) {
-            req.headers_mut().insert("tenant_id", v);
+            req.headers_mut().insert("X-Tenant-Id", v);
+        }
+    }
+    if !username.is_empty() {
+        if let Ok(v) = HeaderValue::from_str(&username) {
+            req.headers_mut().insert("X-Username", v);
         }
     }
     
