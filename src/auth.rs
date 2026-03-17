@@ -6,21 +6,59 @@ use axum::{
 };
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation, TokenData};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 
+/// Claims 结构（与 sa-token JwtClaims 兼容）
+///
+/// sa-token 的 JwtClaims 使用 `sub` 存储 login_id，
+/// 业务字段（tenant_id, username, token_type）存储在 `extra` HashMap 中。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub sub: String,           // 用户 ID
-    pub exp: usize,            // 过期时间（秒）
+    /// 用户 ID（sa-token 的 login_id）
+    pub sub: String,
+    /// 过期时间（Unix 时间戳，秒）
     #[serde(default)]
-    pub tenant_id: String,     // 多租户 ID
+    pub exp: Option<i64>,
+    /// 签发时间（Unix 时间戳，秒）
     #[serde(default)]
-    pub username: String,      // 用户名
+    pub iat: Option<i64>,
+    /// JWT ID
     #[serde(default)]
-    pub token_type: String,    // token 类型
+    pub jti: Option<String>,
+    /// 签发者
     #[serde(default)]
-    pub iat: i64,              // 签发时间
+    pub iss: Option<String>,
+    /// 受众
+    #[serde(default)]
+    pub aud: Option<String>,
+    /// 登录类型
+    #[serde(default)]
+    pub login_type: Option<String>,
+    /// 扩展字段（tenant_id, username, token_type 等）
+    #[serde(default)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+impl Claims {
+    /// 从 extra 获取 tenant_id
+    pub fn tenant_id(&self) -> String {
+        self.extra
+            .get("tenant_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+
+    /// 从 extra 获取 username
+    pub fn username(&self) -> String {
+        self.extra
+            .get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -61,7 +99,16 @@ where
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         // 白名单标记则跳过鉴权，返回空 Claims
         if parts.extensions.get::<crate::proxy::WhitelistBypass>().is_some() {
-            return Ok(JwtAuth(Claims { sub: String::new(), exp: 0, tenant_id: String::new(), username: String::new(), token_type: String::new(), iat: 0 }));
+            return Ok(JwtAuth(Claims {
+                sub: String::new(),
+                exp: None,
+                iat: None,
+                jti: None,
+                iss: None,
+                aud: None,
+                login_type: None,
+                extra: HashMap::new(),
+            }));
         }
 
         // 使用预构造的 DecodingKey（启动时注入，避免每次请求重复构建）

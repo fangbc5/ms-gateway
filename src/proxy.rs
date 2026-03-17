@@ -389,9 +389,11 @@ async fn propagate_auth_headers(mut req: Request<Body>, next: Next) -> Response<
     req.headers_mut().remove("X-Tenant-Id");
     req.headers_mut().remove("X-Username");
 
-    // 从 JWT Claims 中提取用户信息
+    // 从 JWT Claims 中提取用户信息（sa-token 兼容：业务字段在 extra 中）
     let (uid, tenant_id, username) = if let Some(jwt) = req.extensions().get::<crate::auth::JwtAuth>() {
-        (jwt.0.sub.clone(), jwt.0.tenant_id.clone(), jwt.0.username.clone())
+        let tenant_id = jwt.0.tenant_id();
+        let username = jwt.0.username();
+        (jwt.0.sub.clone(), tenant_id, username)
     } else {
         (String::new(), String::new(), String::new())
     };
