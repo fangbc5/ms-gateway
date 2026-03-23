@@ -18,7 +18,19 @@ pub fn get_service_instances(service_name: &str) -> Option<Vec<Arc<Instance>>> {
 }
 
 /// 更新服务实例列表
+/// 注意：如果 Nacos 推送了空列表（常见于容器重启期间的瞬态事件），
+/// 且我们之前有已知实例，则保留旧数据避免服务中断。
 fn update_service_instances(service_name: &str, instances: Vec<Arc<Instance>>) {
+    if instances.is_empty() {
+        // 如果之前已有实例，不直接清空——可能是 Nacos 重启/心跳延迟的瞬态事件
+        if SERVICE_INSTANCES.get(service_name).map_or(false, |v| !v.is_empty()) {
+            tracing::warn!(
+                "⚠️ Nacos 推送 {} 空实例列表，保留旧实例（可能是瞬态事件）",
+                service_name
+            );
+            return;
+        }
+    }
     SERVICE_INSTANCES.insert(service_name.to_string(), instances);
 }
 

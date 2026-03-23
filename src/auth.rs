@@ -21,6 +21,9 @@ pub struct Claims {
     /// 过期时间（Unix 时间戳，秒）
     #[serde(default)]
     pub exp: Option<i64>,
+    /// 生效时间（Unix 时间戳，秒）
+    #[serde(default)]
+    pub nbf: Option<i64>,
     /// 签发时间（Unix 时间戳，秒）
     #[serde(default)]
     pub iat: Option<i64>,
@@ -36,6 +39,9 @@ pub struct Claims {
     /// 登录类型
     #[serde(default)]
     pub login_type: Option<String>,
+    /// 设备标识
+    #[serde(default)]
+    pub device: Option<String>,
     /// 扩展字段（tenant_id, username, token_type 等）
     #[serde(default)]
     pub extra: HashMap<String, serde_json::Value>,
@@ -75,10 +81,13 @@ pub enum AuthError {
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> axum::response::Response {
-        let (status, msg) = match self {
+        let (status, msg) = match &self {
             AuthError::MissingHeader => (StatusCode::UNAUTHORIZED, "Missing authorization header"),
             AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token"),
-            AuthError::DecodeError(_) => (StatusCode::UNAUTHORIZED, "Token decode error"),
+            AuthError::DecodeError(e) => {
+                tracing::warn!("🔐 JWT 解码失败: {}", e);
+                (StatusCode::UNAUTHORIZED, "Token decode error")
+            }
             AuthError::ConfigMissing => (StatusCode::INTERNAL_SERVER_ERROR, "Config missing"),
         };
         (status, msg).into_response()
@@ -102,11 +111,13 @@ where
             return Ok(JwtAuth(Claims {
                 sub: String::new(),
                 exp: None,
+                nbf: None,
                 iat: None,
                 jti: None,
                 iss: None,
                 aud: None,
                 login_type: None,
+                device: None,
                 extra: HashMap::new(),
             }));
         }

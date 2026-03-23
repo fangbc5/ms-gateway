@@ -2,6 +2,7 @@ use axum::{
     body::Body,
     extract::Request,
     http::Response,
+    response::IntoResponse,
     routing::any,
     Router, middleware,
 };
@@ -44,13 +45,10 @@ pub struct WhitelistBypass;
 
 // ===== 代理服务路由 =====
 pub fn router() -> Router {
-    use crate::auth::JwtAuth;
-
     Router::new()
         .route("/*path", any(proxy_handler))
-        // 执行顺序（自下而上）：check_whitelist -> JwtAuth -> propagate_auth_headers
-        .route_layer(middleware::from_fn(propagate_auth_headers))
-        .route_layer(middleware::from_extractor::<JwtAuth>())
+        // 执行顺序（自下而上）：check_whitelist -> auth_and_propagate（合并鉴权+透传）
+        .route_layer(middleware::from_fn(auth_and_propagate))
         .route_layer(middleware::from_fn(check_whitelist_middleware))
         .layer(axum::middleware::from_fn(rate_limit_layer))
 }
@@ -383,37 +381,76 @@ async fn check_whitelist_middleware(mut req: Request<Body>, next: Next) -> Respo
 }
 
 // ===== 透传租户和用户信息中间件 =====
-async fn propagate_auth_headers(mut req: Request<Body>, next: Next) -> Response<Body> {
+/// 合并鉴权 + header 透传中间件
+/// JWT 解码 → 提取 Claims → 注入 X-User-Id / X-Tenant-Id / X-Username
+async fn auth_and_propagate(mut req: Request<Body>, next: Next) -> Response<Body> {
+    use crate::auth::{Claims, AuthError};
+    use jsonwebtoken::{decode, Algorithm, Validation, TokenData};
+
     // 先剥离外部可能伪造的 X-User-* headers（安全防护）
     req.headers_mut().remove("X-User-Id");
     req.headers_mut().remove("X-Tenant-Id");
     req.headers_mut().remove("X-Username");
 
-    // 从 JWT Claims 中提取用户信息（sa-token 兼容：业务字段在 extra 中）
-    let (uid, tenant_id, username) = if let Some(jwt) = req.extensions().get::<crate::auth::JwtAuth>() {
-        let tenant_id = jwt.0.tenant_id();
-        let username = jwt.0.username();
-        (jwt.0.sub.clone(), tenant_id, username)
-    } else {
-        (String::new(), String::new(), String::new())
+    // 白名单标记则跳过鉴权，直接放行
+    if req.extensions().get::<WhitelistBypass>().is_some() {
+        return next.run(req).await;
+    }
+
+    // 获取 DecodingKey
+    let decoding_key = match req.extensions().get::<Arc<jsonwebtoken::DecodingKey>>() {
+        Some(k) => k.clone(),
+        None => {
+            return AuthError::ConfigMissing.into_response();
+        }
     };
-    
+
+    // 提取 Authorization header
+    let auth_header = match req.headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    {
+        Some(h) => h.to_string(),
+        None => {
+            return AuthError::MissingHeader.into_response();
+        }
+    };
+
+    if !auth_header.starts_with("Bearer ") {
+        return AuthError::InvalidToken.into_response();
+    }
+    let token = auth_header.trim_start_matches("Bearer ").trim();
+
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = true;
+
+    let token_data: TokenData<Claims> = match decode(token, &decoding_key, &validation) {
+        Ok(td) => td,
+        Err(e) => {
+            return AuthError::DecodeError(e).into_response();
+        }
+    };
+
+    let claims = token_data.claims;
+
     // 注入网关验证过的用户信息 headers
-    if !uid.is_empty() {
-        if let Ok(v) = HeaderValue::from_str(&uid) {
+    if !claims.sub.is_empty() {
+        if let Ok(v) = HeaderValue::from_str(&claims.sub) {
             req.headers_mut().insert("X-User-Id", v);
         }
     }
+    let tenant_id = claims.tenant_id();
     if !tenant_id.is_empty() {
         if let Ok(v) = HeaderValue::from_str(&tenant_id) {
             req.headers_mut().insert("X-Tenant-Id", v);
         }
     }
+    let username = claims.username();
     if !username.is_empty() {
         if let Ok(v) = HeaderValue::from_str(&username) {
             req.headers_mut().insert("X-Username", v);
         }
     }
-    
+
     next.run(req).await
 }
