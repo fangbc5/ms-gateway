@@ -18,7 +18,6 @@ service_name = "ms-oss"
 [[routes]]
 prefix = ["/ws", "/ws/**", "/wss", "/wss/**"]
 service_name = "ms-websocket"
-whitelist = ["/ws", "/ws/**", "/wss", "/wss/**"]
 
 # ms-websocket 测试接口
 [[routes]]

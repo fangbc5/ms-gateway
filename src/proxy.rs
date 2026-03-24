@@ -205,10 +205,31 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
         } else {
             forward_path
         };
+
+        // 从 auth 中间件注入的 X-User-Id 获取 uid
+        let uid = req.headers()
+            .get("X-User-Id")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("0")
+            .to_string();
+
+        // 构建上游查询参数：注入 uid，保留 clientId，剥离 token
+        let mut ws_params: Vec<String> = vec![format!("uid={}", uid)];
+        if let Some(raw_query) = req.uri().query() {
+            for pair in raw_query.split('&') {
+                let key = pair.split('=').next().unwrap_or("");
+                // 保留 clientId 等非 token 参数
+                if key != "token" {
+                    ws_params.push(pair.to_string());
+                }
+            }
+        }
+        let ws_query = format!("?{}", ws_params.join("&"));
+
         let ws_url = format!("{}{}{}",
             upstream.replace("http://", "ws://").replace("https://", "wss://"),
             ws_path,
-            query_suffix
+            ws_query
         );
         info!("检测到 WebSocket 请求，转发到: {}", ws_url);
         return crate::websocket::handle_websocket(req, ws_url).await;
@@ -405,26 +426,32 @@ async fn auth_and_propagate(mut req: Request<Body>, next: Next) -> Response<Body
         }
     };
 
-    // 提取 Authorization header
-    let auth_header = match req.headers()
+    // 提取 JWT token：优先 Authorization header，WS 回退到 ?token= 查询参数
+    let auth_header = req.headers()
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-    {
-        Some(h) => h.to_string(),
-        None => {
-            return AuthError::MissingHeader.into_response();
+        .map(|h| h.to_string());
+
+    let token = if let Some(ref header) = auth_header {
+        if !header.starts_with("Bearer ") {
+            return AuthError::InvalidToken.into_response();
+        }
+        header.trim_start_matches("Bearer ").trim().to_string()
+    } else {
+        // WebSocket 不支持自定义 header，从 ?token= 查询参数提取
+        match req.uri().query()
+            .and_then(|q| q.split('&').find(|p| p.starts_with("token=")))
+            .and_then(|p| p.strip_prefix("token="))
+        {
+            Some(t) if !t.is_empty() => t.to_string(),
+            _ => return AuthError::MissingHeader.into_response(),
         }
     };
-
-    if !auth_header.starts_with("Bearer ") {
-        return AuthError::InvalidToken.into_response();
-    }
-    let token = auth_header.trim_start_matches("Bearer ").trim();
 
     let mut validation = Validation::new(Algorithm::HS256);
     validation.validate_exp = true;
 
-    let token_data: TokenData<Claims> = match decode(token, &decoding_key, &validation) {
+    let token_data: TokenData<Claims> = match decode(&token, &decoding_key, &validation) {
         Ok(td) => td,
         Err(e) => {
             return AuthError::DecodeError(e).into_response();
