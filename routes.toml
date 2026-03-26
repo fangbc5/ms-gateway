@@ -9,6 +9,11 @@ whitelist = ["/api/v1/auth/login", "/api/v1/auth/register", "/api/v1/auth/send-c
 prefix = ["/api/v1/identity/**"]
 service_name = "ms-identity"
 
+# ========== im 服务 ==========
+[[routes]]
+prefix = ["/api/v1/im/**"]
+service_name = "ms-im"
+
 # ========== 对象存储服务 ==========
 [[routes]]
 prefix = ["/api/v1/oss/**"]
@@ -19,11 +24,6 @@ service_name = "ms-oss"
 prefix = ["/ws", "/ws/**", "/wss", "/wss/**"]
 service_name = "ms-websocket"
 
-# ms-websocket 测试接口
-[[routes]]
-prefix = ["/api/test/**"]
-service_name = "ms-websocket"
-whitelist = ["/api/test/**"]
 
 # ========== 健康检查 ==========
 [health_check]
