@@ -1,13 +1,9 @@
 use axum::{
-    async_trait,
-    extract::{FromRequestParts},
-    http::{request::Parts, StatusCode},
-    response::{IntoResponse},
+    http::StatusCode,
+    response::IntoResponse,
 };
-use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation, TokenData};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use thiserror::Error;
 
 /// Claims 结构（与 sa-token JwtClaims 兼容）
@@ -94,66 +90,3 @@ impl IntoResponse for AuthError {
     }
 }
 
-/// Extractor: 从请求 header 中验证 JWT 并把 Claims 放进请求扩展里
-#[derive(Debug, Clone)]
-pub struct JwtAuth(pub Claims);
-
-#[async_trait]
-impl<S> FromRequestParts<S> for JwtAuth
-where
-    S: Send + Sync,
-{
-    type Rejection = AuthError;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        // 白名单标记则跳过鉴权，返回空 Claims
-        if parts.extensions.get::<crate::proxy::WhitelistBypass>().is_some() {
-            return Ok(JwtAuth(Claims {
-                sub: String::new(),
-                exp: None,
-                nbf: None,
-                iat: None,
-                jti: None,
-                iss: None,
-                aud: None,
-                login_type: None,
-                device: None,
-                extra: HashMap::new(),
-            }));
-        }
-
-        // 使用预构造的 DecodingKey（启动时注入，避免每次请求重复构建）
-        let decoding_key = parts
-            .extensions
-            .get::<Arc<DecodingKey>>()
-            .ok_or(AuthError::ConfigMissing)?
-            .clone();
-
-        let auth_header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or(AuthError::MissingHeader)?;
-
-        if !auth_header.starts_with("Bearer ") {
-            return Err(AuthError::InvalidToken);
-        }
-        let token = auth_header.trim_start_matches("Bearer ").trim();
-
-        let mut validation = Validation::new(Algorithm::HS256);
-        validation.validate_exp = true;
-
-        let token_data: TokenData<Claims> = decode(
-            token,
-            &decoding_key,
-            &validation,
-        )?;
-
-        let claims = token_data.claims;
-        
-        // 将解析后的 Claims 存储到 extensions 中，供后续中间件使用
-        parts.extensions.insert(JwtAuth(claims.clone()));
-
-        Ok(JwtAuth(claims))
-    }
-}
