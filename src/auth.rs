@@ -77,16 +77,27 @@ pub enum AuthError {
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> axum::response::Response {
-        let (status, msg) = match &self {
-            AuthError::MissingHeader => (StatusCode::UNAUTHORIZED, "Missing authorization header"),
-            AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, "Invalid token"),
+        let (status, code, msg) = match &self {
+            AuthError::MissingHeader => (StatusCode::UNAUTHORIZED, 401, "缺少 Authorization 请求头"),
+            AuthError::InvalidToken => (StatusCode::UNAUTHORIZED, 401, "无效的 Token"),
             AuthError::DecodeError(e) => {
                 tracing::warn!("🔐 JWT 解码失败: {}", e);
-                (StatusCode::UNAUTHORIZED, "Token decode error")
+                (StatusCode::UNAUTHORIZED, 401, "Token 已过期或无效")
             }
-            AuthError::ConfigMissing => (StatusCode::INTERNAL_SERVER_ERROR, "Config missing"),
+            AuthError::ConfigMissing => (StatusCode::INTERNAL_SERVER_ERROR, 500, "网关配置缺失"),
         };
-        (status, msg).into_response()
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+        let body = serde_json::json!({
+            "success": false,
+            "code": code,
+            "msg": msg,
+            "data": null,
+            "timestamp": timestamp
+        });
+        (status, axum::Json(body)).into_response()
     }
 }
 
