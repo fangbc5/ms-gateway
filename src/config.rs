@@ -48,6 +48,12 @@ pub struct RouteRule {
     // 白名单路径（命中则跳过鉴权），支持 string 或 array
     #[serde(default, deserialize_with = "opt_vec_string_deser::deserialize")] 
     pub whitelist: Option<Vec<String>>,
+    /// 是否去除前缀，默认为 true 保持向下兼容
+    #[serde(default = "default_strip_prefix")]
+    pub strip_prefix: bool,
+    /// 自定义要去除的前缀，可选。如果配置了此项，则以该项为准截断
+    #[serde(default)]
+    pub strip_prefix_path: Option<String>,
     // ===== 预编译字段（启动时填充，避免运行时 Mutex 竞争）=====
     /// 预编译的前缀匹配模式
     #[serde(skip)]
@@ -60,6 +66,10 @@ pub struct RouteRule {
 // 默认负载均衡策略
 fn default_strategy() -> String {
     "robin".to_string()
+}
+
+fn default_strip_prefix() -> bool {
+    true
 }
 
 // 通用反序列化器：支持字符串和数组两种格式（prefix 和 upstream 共用）
@@ -469,6 +479,8 @@ mod tests {
                 upstream: vec!["http://localhost:30000".to_string()],
                 strategy: "robin".to_string(),
                 whitelist: None,
+                strip_prefix: true,
+                strip_prefix_path: None,
                 compiled_prefixes: vec![],
                 compiled_whitelist: vec![],
                 service_name: None,
@@ -478,6 +490,8 @@ mod tests {
                 upstream: vec!["http://localhost:30001".to_string(), "http://localhost:30002".to_string()],
                 strategy: "random".to_string(),
                 whitelist: None,
+                strip_prefix: true,
+                strip_prefix_path: None,
                 compiled_prefixes: vec![],
                 compiled_whitelist: vec![],
                 service_name: None,
@@ -517,6 +531,8 @@ mod tests {
             upstream: vec!["http://localhost:30000".to_string()],
             strategy: "robin".to_string(),
             whitelist: None,
+            strip_prefix: true,
+            strip_prefix_path: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
             service_name: None,
@@ -528,6 +544,8 @@ mod tests {
             upstream: vec!["http://localhost:30000".to_string()],
             strategy: "robin".to_string(),
             whitelist: None,
+            strip_prefix: true,
+            strip_prefix_path: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
             service_name: None,
@@ -539,6 +557,8 @@ mod tests {
             upstream: vec![],
             strategy: "robin".to_string(),
             whitelist: None,
+            strip_prefix: true,
+            strip_prefix_path: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
             service_name: None,
@@ -550,6 +570,8 @@ mod tests {
             upstream: vec!["http://localhost:30000".to_string()],
             strategy: "unknown".to_string(),
             whitelist: None,
+            strip_prefix: true,
+            strip_prefix_path: None,
             compiled_prefixes: vec![],
             compiled_whitelist: vec![],
             service_name: None,

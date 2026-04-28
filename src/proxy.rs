@@ -169,7 +169,7 @@ async fn proxy_handler(req: Request<Body>) -> Response<Body> {
                 let selected_upstream = get_or_create_balancer(&best_match.prefix, &healthy_upstreams, &best_match.strategy)
                     .select(client_addr.as_ref())
                     .unwrap_or_else(|| healthy_upstreams[0].url.clone());
-                let forward_path = reconstruct_forward_path(&match_path, &best_match.prefix, &path_variables);
+                let forward_path = reconstruct_forward_path(&match_path, best_match, &path_variables);
                 Some((selected_upstream, forward_path))
             }
         } else {
@@ -364,10 +364,21 @@ fn find_best_match<'a>(rules: &'a [crate::config::RouteRule], path: &str) -> Opt
 // ===== 重构转发路径 =====
 fn reconstruct_forward_path(
     original_path: &str,
-    prefixes: &[String],
+    rule: &crate::config::RouteRule,
     _variables: &std::collections::HashMap<String, String>,
 ) -> String {
-    for prefix in prefixes {
+    if !rule.strip_prefix {
+        return original_path.to_string();
+    }
+
+    if let Some(ref custom_prefix) = rule.strip_prefix_path {
+        if original_path.starts_with(custom_prefix) {
+            return original_path.strip_prefix(custom_prefix).unwrap_or(original_path).to_string();
+        }
+        return original_path.to_string();
+    }
+
+    for prefix in &rule.prefix {
         if original_path.starts_with(prefix) {
             return original_path.strip_prefix(prefix).unwrap_or(original_path).to_string();
         }
