@@ -1,7 +1,7 @@
 use regex::Regex;
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
-use std::sync::Mutex;
+use dashmap::DashMap;
 
 /// RoutePattern: 存储原始 pattern、编译后的正则、变量名顺序
 pub struct RoutePattern {
@@ -10,29 +10,23 @@ pub struct RoutePattern {
     var_names: Vec<String>,
 }
 
-// 使用once_cell缓存编译后的模式，避免重复编译
-static PATTERN_CACHE: Lazy<Mutex<HashMap<String, RoutePattern>>> = 
-    Lazy::new(|| Mutex::new(HashMap::new()));
+// 使用 DashMap 缓存编译后的模式，无锁并发读写
+static PATTERN_CACHE: Lazy<DashMap<String, RoutePattern>> = 
+    Lazy::new(DashMap::new);
 
 impl RoutePattern {
     /// 将像 "/api/{id:[0-9]+}/file/**" 这样的 pattern 编译成 Regex 并记录变量名
     pub fn from_pattern(pattern: &str) -> Result<Self, regex::Error> {
-        // 先检查缓存
-        {
-            let cache = PATTERN_CACHE.lock().unwrap();
-            if let Some(cached) = cache.get(pattern) {
-                return Ok(cached.clone());
-            }
+        // 先检查缓存（无锁读）
+        if let Some(cached) = PATTERN_CACHE.get(pattern) {
+            return Ok(cached.clone());
         }
 
         // 编译新模式
         let new_pattern = Self::compile_pattern(pattern)?;
         
-        // 存入缓存
-        {
-            let mut cache = PATTERN_CACHE.lock().unwrap();
-            cache.insert(pattern.to_string(), new_pattern.clone());
-        }
+        // 存入缓存（无锁写）
+        PATTERN_CACHE.insert(pattern.to_string(), new_pattern.clone());
 
         Ok(new_pattern)
     }

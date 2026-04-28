@@ -33,8 +33,8 @@ impl LoadBalancer for RoundRobinBalancer {
     fn update_upstreams(&self, new_upstreams: Vec<WeightedUpstream>) {
         let urls: Vec<String> = new_upstreams.into_iter().map(|u| u.url).collect();
         self.upstreams.store(Arc::new(urls));
-        // 重置计数器，确保更新后从第一个节点开始轮询
-        self.current.store(0, Ordering::Relaxed);
+        // 不重置计数器，让 fetch_add % new_len 自然分布
+        // 避免 Nacos 频繁推送导致流量始终倾斜到第一个节点
     }
 }
 
@@ -77,7 +77,7 @@ mod tests {
             WeightedUpstream { url: "http://d:3000".into(), weight: 1 },
         ]);
 
-        // 更新后应选到新节点（counter 继续递增取模）
+        // 更新后计数器不重置，fetch_add % new_len 自然分布
         let next = balancer.select(None).unwrap();
         assert!(next == "http://c:3000" || next == "http://d:3000");
     }

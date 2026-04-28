@@ -128,6 +128,9 @@ pub struct Settings {
     /// CORS 允许的源列表（逗号分隔），留空或不配置则允许所有
     #[serde(default)]
     pub cors_allowed_origins: Option<String>,
+    /// 管理接口密钥（可选），配置后 /_reload 等接口需要携带 X-Admin-Token 请求头
+    #[serde(default)]
+    pub admin_token: Option<String>,
     /// Nacos 配置（可选，默认不启用）
     #[serde(default)]
     pub nacos: Option<NacosSettings>,

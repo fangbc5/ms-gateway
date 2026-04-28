@@ -11,6 +11,7 @@ use tracing_subscriber::EnvFilter;
 
 mod auth;
 mod config;
+mod error;
 mod health_check;
 mod load_balancer;
 mod metrics;
@@ -143,16 +144,37 @@ async fn health_check_endpoint() -> Json<serde_json::Value> {
 /// 路由热重载端点 POST /_reload
 async fn reload_routes(
     Extension(shared): Extension<config::SharedRouteRules>,
-) -> impl IntoResponse {
+    Extension(settings): Extension<config::Settings>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    // 管理接口鉴权：如果配置了 admin_token，则要求携带 X-Admin-Token
+    if let Some(ref expected_token) = settings.admin_token {
+        let provided = req
+            .headers()
+            .get("X-Admin-Token")
+            .and_then(|v| v.to_str().ok());
+        match provided {
+            Some(token) if token == expected_token => {}
+            _ => {
+                return error::GatewayError::Forbidden(
+                    "管理接口鉴权失败，请提供正确的 X-Admin-Token".to_string(),
+                )
+                .into_response();
+            }
+        }
+    }
+
     match config::reload_route_rules(&shared) {
         Ok(count) => (
             axum::http::StatusCode::OK,
             Json(json!({ "status": "ok", "routes_loaded": count })),
-        ),
+        )
+            .into_response(),
         Err(err) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "status": "error", "message": err })),
-        ),
+        )
+            .into_response(),
     }
 }
 
